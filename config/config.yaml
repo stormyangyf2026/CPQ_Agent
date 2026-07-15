@@ -1,16 +1,16 @@
 model:
   provider: deepseek
   model_name: deepseek-v4-pro
-  api_key: your-deepseek-api-key-here
+  api_key: sk-0a496eadeea84473b244dd327dc94943
   base_url: https://api.deepseek.com
   temperature: 0.7
   max_tokens: 4096
   top_p: 0.9
 cpq:
-  base_url: http://your-cpq-server:30000
-  client_id: your-cpq-client-id
+  base_url: http://8.148.208.235:30000
+  client_id: e5cd7e4891bf95d1d19206ce24a7b32e
   username: admin
-  password: your-password
+  password: admin123
   timeout: 30
   max_retries: 3
 agent:

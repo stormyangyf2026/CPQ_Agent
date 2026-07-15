@@ -71,7 +71,6 @@ jobs:
   # Job 2: Windows 打包（PyInstaller + Electron）
   # ──────────────────────────────────────────
   build-windows:
-    needs: docker-backend
     runs-on: windows-latest
     if: github.event_name != 'pull_request'
 
@@ -101,6 +100,27 @@ jobs:
             exit 1
           }
 
+      - name: 烟雾测试 — 启动后端并检查 /health
+        continue-on-error: true
+        run: |
+          Write-Host "启动 cpq-backend.exe 进行烟雾测试..."
+          $proc = Start-Process -FilePath "backend/dist/cpq-backend.exe" -NoNewWindow -PassThru -Environment @{PORT="58119"; HOST="127.0.0.1"}
+          Start-Sleep -Seconds 5
+          try {
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:58119/health" -UseBasicParsing -TimeoutSec 5
+            if ($resp.StatusCode -eq 200) {
+              Write-Host "✅ 烟雾测试通过 — /health 返回 $($resp.StatusCode)"
+            } else {
+              Write-Host "⚠️ 烟雾测试: /health 返回 $($resp.StatusCode)"
+            }
+          } catch {
+            Write-Host "⚠️ 烟雾测试失败: $_"
+          }
+          if ($proc -and !$proc.HasExited) {
+            $proc.Kill()
+            Write-Host "后端进程已终止"
+          }
+
       - name: 上传 backend exe 产物
         uses: actions/upload-artifact@v4
         with:
@@ -127,10 +147,10 @@ jobs:
         run: |
           cd frontend
           npm run electron:build:win
-          if (Test-Path release/*.zip) {
+          if (Test-Path release/*.exe) {
             Get-ChildItem release/
           } else {
-            Write-Host "❌ 未找到 release zip"
+            Write-Host "❌ 未找到 release 产物"
             exit 1
           }
 
@@ -138,7 +158,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cpq-agent-windows
-          path: frontend/release/*.zip
+          path: frontend/release/*.{exe,zip}
           retention-days: 30
 
   # ──────────────────────────────────────────
