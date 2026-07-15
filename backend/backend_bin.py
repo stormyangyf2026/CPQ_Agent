@@ -22,7 +22,7 @@ from server import app
 def main():
     port = int(os.environ.get("PORT", "58118"))
     host = os.environ.get("HOST", "127.0.0.1")
-    print(f"[backend] 启动 CPQ Agent 服务: http://{host}:{port}")
+    print(f"[backend] Starting CPQ Agent service: http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info", workers=1)
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "clean": "npx rimraf \"src/**/*.js\" \"src/**/*.js.map\"",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});require('fs').rmSync('release',{recursive:true,force:true})\"",
     "predev": "npm run clean",
     "dev": "vite",
     "prebuild": "npm run clean",
@@ -74,7 +74,6 @@
     "electron-builder": "^26.15.3",
     "electron-packager": "^17.1.2",
     "resedit": "^3.0.2",
-    "rimraf": "^6.0.1",
     "typescript": "~5.5.0",
     "vite": "^5.4.21",
     "vue-tsc": "^2.0.0"

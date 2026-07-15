@@ -136,7 +136,7 @@ jobs:
       - name: 安装前端依赖
         run: |
           cd frontend
-          npm ci
+          npm install
 
       - name: 拷贝 cpq-backend.exe 到 backend 目录
         run: |
