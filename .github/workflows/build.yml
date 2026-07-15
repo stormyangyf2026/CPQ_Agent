@@ -53,15 +53,16 @@ jobs:
           docker run -d --name cpq-test \
             -p 58118:58118 \
             -e DEEPSEEK_API_KEY=test-key \
+            -e PORT=58118 \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-backend:${{ github.sha }}
-          # 等待服务启动
-          for i in $(seq 1 20); do
+          # 等待服务启动（后端加载 deepagents/langchain 较重，需要更多时间）
+          for i in $(seq 1 30); do
             if curl -sf http://localhost:58118/health; then
               echo "✅ 后端健康检查通过"
               exit 0
             fi
-            echo "等待后端启动... ($i/20)"
-            sleep 2
+            echo "等待后端启动... ($i/30)"
+            sleep 3
           done
           echo "❌ 后端启动超时"
           docker logs cpq-test
