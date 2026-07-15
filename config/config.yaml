@@ -7,7 +7,7 @@ model:
   max_tokens: 4096
   top_p: 0.9
 cpq:
-  base_url: http://8.148.208.235:30000
+  base_url: http://10.100.111.55:2999
   client_id: e5cd7e4891bf95d1d19206ce24a7b32e
   username: admin
   password: admin123
