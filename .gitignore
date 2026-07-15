@@ -11,9 +11,6 @@ node_modules/
 frontend/dist/
 frontend/release/
 
-# Config (contains secrets)
-config/config.yaml
-
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,77 @@
+model:
+  provider: deepseek
+  model_name: deepseek-v4-pro
+  api_key: your-deepseek-api-key-here
+  base_url: https://api.deepseek.com
+  temperature: 0.7
+  max_tokens: 4096
+  top_p: 0.9
+cpq:
+  base_url: http://your-cpq-server:30000
+  client_id: your-cpq-client-id
+  username: admin
+  password: your-password
+  timeout: 30
+  max_retries: 3
+agent:
+  system_prompt: '你是一个制造业 CPQ（配置-定价-报价）智能助手。
+
+
+    职责:
+
+    1. 理解客户需求，推荐匹配的产品配置
+
+    2. 根据 CPQ 约束规则验证配置可行性
+
+    3. 生成 BOM 物料清单和定价
+
+    4. 支持价格反向匹配和方案对比
+
+    5. 生成报价单
+
+
+    行为准则:
+
+    - 推荐配置前先验证规则，不推荐不合规配置
+
+    - 定价时说明基准价、折扣、建议价、最低限价
+
+    - 反向匹配时明确告知替代方案的取舍
+
+    - 生成报价单前请用户确认
+
+    '
+  max_turns: 10
+  enable_subagents: true
+memory:
+  storage_path: ./data/memory
+  preferences_file: preferences.md
+  max_file_size_kb: 500
+skills:
+  paths:
+  - ./backend/skills/cpq-agent
+  - ./backend/skills/product-search
+  - ./backend/skills/bom-config
+  - ./backend/skills/pricing-rules
+human_in_loop:
+  interrupt_on:
+    create_quote: true
+    send_quote: true
+security:
+  backend: state
+  permissions:
+    allow_paths:
+    - ./workspace/**
+    deny_paths:
+    - ./config/**
+    - ./data/**/*.key
+logging:
+  level: info
+  file: ./logs/agent.log
+  max_size_mb: 10
+  backup_count: 3
+ui:
+  language: zh-CN
+  theme: auto
+  typewriter_delay_ms: 20
+  history_retention_days: 30
