@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CPQ Agent App — 设计效果预览</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        cpq: {
+          primary: '#2563EB',
+          accent: '#0EA5E9',
+          success: '#059669',
+          warning: '#D97706',
+          danger: '#DC2626',
+          'match-high': '#059669',
+          'match-medium': '#D97706',
+          'match-low': '#DC2626',
+          'diff-added': '#059669',
+          'diff-removed': '#DC2626',
+          'diff-changed': '#D97706',
+          'chat-bg': '#F8FAFC',
+          'sidebar-bg': '#F1F5F9',
+          'card-bg': '#FFFFFF',
+          'msg-user': '#DBEAFE',
+          'msg-agent': '#FFFFFF',
+          'msg-thinking': '#F0F9FF',
+          'bom-header': '#F1F5F9',
+          'bom-row-hover': '#F0FDF4',
+        }
+      },
+      fontFamily: {
+        sans: ['Inter', 'PingFang SC', 'Noto Sans SC', 'sans-serif'],
+        mono: ['JetBrains Mono', 'SF Mono', 'monospace'],
+      }
+    }
+  }
+}
+</script>
+<style>
+:root {
+  --cpq-bg-page: #F0F2F5;
+  --cpq-shadow-card: 0 1px 3px 0 rgba(0,0,0,0.06), 0 1px 2px -1px rgba(0,0,0,0.06);
+  --cpq-shadow-msg: 0 1px 2px 0 rgba(0,0,0,0.04);
+  --cpq-shadow-modal: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
+  --cpq-radius-card: 12px;
+  --cpq-radius-msg: 16px;
+  --cpq-radius-btn: 8px;
+}
+.dark {
+  --cpq-bg-page: #0F172A;
+  --cpq-shadow-card: 0 1px 3px 0 rgba(0,0,0,0.3);
+  --cpq-shadow-msg: 0 1px 2px 0 rgba(0,0,0,0.2);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', 'PingFang SC', 'Noto Sans SC', sans-serif; background: var(--cpq-bg-page); }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+.dark ::-webkit-scrollbar-thumb { background: #475569; }
+
+/* ===== Message Animations ===== */
+.msg-enter { animation: msgSlide 0.35s cubic-bezier(0.16,1,0.3,1) both; }
+@keyframes msgSlide { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+.msg-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.msg-stagger > *:nth-child(2) { animation-delay: 80ms; }
+.msg-stagger > *:nth-child(3) { animation-delay: 160ms; }
+.msg-stagger > *:nth-child(4) { animation-delay: 240ms; }
+
+/* ===== Typing Cursor ===== */
+.typing-cursor { display: inline-block; width: 2px; height: 1.1em; background: #2563EB; margin-left: 2px; vertical-align: text-bottom; animation: blink 1s step-end infinite; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* ===== Thinking Pulse ===== */
+.thinking-dot { width: 6px; height: 6px; border-radius: 50%; background: #94A3B8; animation: dotPulse 1.4s ease-in-out infinite both; }
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotPulse { 0%,80%,100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+
+/* ===== Skeleton ===== */
+.skeleton { background: linear-gradient(90deg, #E2E8F0 25%, #F1F5F9 50%, #E2E8F0 75%); background-size: 200% 100%; animation: shimmer 1.5s ease-in-out infinite; border-radius: 6px; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* ===== Card Hover ===== */
+.cpq-card { transition: box-shadow 0.2s cubic-bezier(0.16,1,0.3,1), transform 0.2s cubic-bezier(0.16,1,0.3,1); }
+.cpq-card:hover { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.04); transform: translateY(-1px); }
+
+/* ===== Tab underline ===== */
+.settings-tab { position: relative; cursor: pointer; transition: color 0.15s; }
+.settings-tab.active { color: #2563EB; }
+.settings-tab.active::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; background: #2563EB; border-radius: 1px; }
+</style>
+</head>
+<body class="min-h-[100dvh] flex items-center justify-center p-4">
+
+<!-- ============================================================ -->
+<!-- App Shell -->
+<!-- ============================================================ -->
+<div class="w-full max-w-[1280px] h-[90vh] bg-white dark:bg-slate-900 rounded-2xl overflow-hidden flex shadow-2xl" style="box-shadow: var(--cpq-shadow-modal);">
+
+  <!-- ===== Sidebar ===== -->
+  <aside class="w-[280px] flex-shrink-0 flex flex-col border-r border-slate-200 dark:border-slate-700" style="background: var(--cpq-bg-sidebar);">
+    <!-- Header -->
+    <div class="px-5 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-[#2563EB] flex items-center justify-center">
+          <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        </div>
+        <span class="font-semibold text-[15px] text-slate-800 dark:text-slate-100">CPQ Agent</span>
+      </div>
+      <button onclick="toggleTheme()" class="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors" title="切换主题">
+        <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+      </button>
+    </div>
+    <!-- New Chat -->
+    <div class="px-4 pb-3">
+      <button class="w-full py-2.5 rounded-lg bg-[#2563EB] text-white text-sm font-medium hover:bg-[#1D4ED8] transition-colors flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        新建配单
+      </button>
+    </div>
+    <!-- Sessions -->
+    <div class="flex-1 overflow-y-auto px-3 space-y-0.5">
+      <div class="px-3 py-1.5 text-[11px] font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider">最近会话</div>
+      <div class="px-3 py-2.5 rounded-lg cursor-pointer border-l-[3px] border-[#2563EB] bg-white/60 dark:bg-slate-800/60">
+        <div class="text-[13px] font-medium text-slate-800 dark:text-slate-100 truncate">德国客户 HVI-40.0</div>
+        <div class="text-[11px] text-slate-400 mt-0.5">2小时前 · 报价单 Q20250705001</div>
+      </div>
+      <div class="px-3 py-2.5 rounded-lg cursor-pointer border-l-[3px] border-transparent hover:bg-white/40 dark:hover:bg-slate-800/40">
+        <div class="text-[13px] text-slate-600 dark:text-slate-300 truncate">别墅储能方案 - 低压</div>
+        <div class="text-[11px] text-slate-400 mt-0.5">昨天</div>
+      </div>
+      <div class="px-3 py-2.5 rounded-lg cursor-pointer border-l-[3px] border-transparent hover:bg-white/40 dark:hover:bg-slate-800/40">
+        <div class="text-[13px] text-slate-600 dark:text-slate-300 truncate">法国客户询价</div>
+        <div class="text-[11px] text-slate-400 mt-0.5">3天前</div>
+      </div>
+    </div>
+    <!-- Bottom: Settings -->
+    <div class="p-3 border-t border-slate-200 dark:border-slate-700">
+      <button onclick="toggleSettings()" class="w-full py-2 rounded-lg text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors flex items-center gap-2 px-3">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        设置
+      </button>
+    </div>
+  </aside>
+
+  <!-- ===== Chat Area ===== -->
+  <main class="flex-1 flex flex-col min-w-0" style="background: var(--cpq-bg-chat);">
+    <!-- Header -->
+    <header class="h-[56px] flex items-center justify-between px-5 border-b border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm flex-shrink-0">
+      <div>
+        <h2 class="text-[15px] font-semibold text-slate-800 dark:text-slate-100">德国客户 HVI-40.0</h2>
+        <p class="text-[11px] text-slate-400">EVE-HVI-40.0 · 40.96 kWh · 高压壁挂</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> CPQ 已连接
+        </span>
+      </div>
+    </header>
+
+    <!-- Messages -->
+    <div class="flex-1 overflow-y-auto px-5 py-4 space-y-5 msg-stagger" id="chatMessages">
+      <!-- User Message -->
+      <div class="flex justify-end msg-enter">
+        <div class="max-w-[75%] px-4 py-3 rounded-2xl rounded-br-md text-[14px] leading-relaxed text-slate-800 dark:text-slate-100" style="background: var(--cpq-bg-msg-user); box-shadow: var(--cpq-shadow-msg);">
+          德国客户需要一套家用高压储能系统，40kWh左右，VDE认证，预算5万欧以内
+        </div>
+      </div>
+
+      <!-- Thinking -->
+      <div class="flex gap-3 msg-enter">
+        <div class="w-8 h-8 rounded-full bg-[#EA580C] flex items-center justify-center flex-shrink-0 text-white text-xs font-bold">AI</div>
+        <div class="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-bl-md" style="background: var(--cpq-bg-msg-thinking); box-shadow: var(--cpq-shadow-msg);">
+          <div class="flex items-center gap-2">
+            <span class="text-[13px] text-slate-500 dark:text-slate-400">正在搜索产品</span>
+            <span class="flex gap-1 ml-1">
+              <span class="thinking-dot"></span><span class="thinking-dot"></span><span class="thinking-dot"></span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Product Card -->
+      <div class="flex gap-3 msg-enter">
+        <div class="w-8 h-8 rounded-full bg-[#EA580C] flex items-center justify-center flex-shrink-0 text-white text-xs font-bold">AI</div>
+        <div class="max-w-[80%]">
+          <div class="cpq-card bg-white dark:bg-slate-800 rounded-xl p-4" style="box-shadow: var(--cpq-shadow-card); border: 1px solid var(--cpq-border-card);">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-3">
+              <div>
+                <h3 class="text-[15px] font-semibold text-slate-800 dark:text-slate-100">EVE-HVI-40.0</h3>
+                <p class="text-[12px] text-slate-400 mt-0.5">高压壁挂式储能系统</p>
+              </div>
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700">匹配度 94%</span>
+            </div>
+            <!-- Specs Table -->
+            <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-[13px] mb-3">
+              <div class="flex justify-between"><span class="text-slate-400">容量</span><span class="font-medium text-slate-800 dark:text-slate-100 font-mono">40.96 kWh</span></div>
+              <div class="flex justify-between"><span class="text-slate-400">标称电压</span><span class="font-medium text-slate-800 dark:text-slate-100 font-mono">409.6 V</span></div>
+              <div class="flex justify-between"><span class="text-slate-400">认证</span><span class="font-medium text-slate-800 dark:text-slate-100">VDE 4105</span></div>
+              <div class="flex justify-between"><span class="text-slate-400">防护等级</span><span class="font-medium text-slate-800 dark:text-slate-100">IP65</span></div>
+            </div>
+            <!-- Price -->
+            <div class="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-700">
+              <div>
+                <span class="text-[11px] text-slate-400">建议售价</span>
+                <div class="text-[20px] font-bold text-[#DC2626] font-mono">¥39,800</div>
+              </div>
+              <button class="px-4 py-2 rounded-lg bg-[#2563EB] text-white text-[13px] font-medium hover:bg-[#1D4ED8] transition-colors">确认选择</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BOM Table -->
+      <div class="flex gap-3 msg-enter">
+        <div class="w-8 h-8 rounded-full bg-[#EA580C] flex items-center justify-center flex-shrink-0 text-white text-xs font-bold">AI</div>
+        <div class="max-w-[85%] w-full">
+          <div class="text-[13px] text-slate-600 dark:text-slate-300 mb-2 font-medium">BOM 物料清单</div>
+          <div class="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700" style="box-shadow: var(--cpq-shadow-card);">
+            <table class="w-full text-[13px]">
+              <thead>
+                <tr style="background: var(--cpq-bg-bom-header);">
+                  <th class="text-left px-4 py-2.5 font-medium text-slate-500 text-[11px] uppercase tracking-wider">物料编码</th>
+                  <th class="text-left px-4 py-2.5 font-medium text-slate-500 text-[11px] uppercase tracking-wider">名称</th>
+                  <th class="text-right px-4 py-2.5 font-medium text-slate-500 text-[11px] uppercase tracking-wider font-mono">数量</th>
+                  <th class="text-right px-4 py-2.5 font-medium text-slate-500 text-[11px] uppercase tracking-wider font-mono">单价</th>
+                  <th class="text-right px-4 py-2.5 font-medium text-slate-500 text-[11px] uppercase tracking-wider font-mono">金额</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-700">
+                <tr class="bg-white dark:bg-slate-800 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-colors">
+                  <td class="px-4 py-2.5 font-mono text-[12px] text-slate-500">CAB-001</td>
+                  <td class="px-4 py-2.5 text-slate-700 dark:text-slate-300">柜体总成</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-700 dark:text-slate-300">1</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-500">8,500</td>
+                  <td class="px-4 py-2.5 text-right font-mono font-medium text-slate-800 dark:text-slate-100">8,500</td>
+                </tr>
+                <tr class="bg-slate-50/50 dark:bg-slate-800/50 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-colors">
+                  <td class="px-4 py-2.5 font-mono text-[12px] text-slate-500">BAT-020</td>
+                  <td class="px-4 py-2.5 text-slate-700 dark:text-slate-300">电芯模组 LF280K ×10</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-700 dark:text-slate-300">10</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-500">2,150</td>
+                  <td class="px-4 py-2.5 text-right font-mono font-medium text-slate-800 dark:text-slate-100">21,500</td>
+                </tr>
+                <tr class="bg-white dark:bg-slate-800 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-colors">
+                  <td class="px-4 py-2.5 font-mono text-[12px] text-slate-500">BMS-015</td>
+                  <td class="px-4 py-2.5 text-slate-700 dark:text-slate-300">BMS 主控板 V3.2</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-700 dark:text-slate-300">1</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-500">3,800</td>
+                  <td class="px-4 py-2.5 text-right font-mono font-medium text-slate-800 dark:text-slate-100">3,800</td>
+                </tr>
+                <tr class="bg-slate-50/50 dark:bg-slate-800/50 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-colors">
+                  <td class="px-4 py-2.5 font-mono text-[12px] text-slate-500">INV-008</td>
+                  <td class="px-4 py-2.5 text-slate-700 dark:text-slate-300">逆变器 10kW</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-700 dark:text-slate-300">1</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-slate-500">5,200</td>
+                  <td class="px-4 py-2.5 text-right font-mono font-medium text-slate-800 dark:text-slate-100">5,200</td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr class="bg-slate-50 dark:bg-slate-800/70 font-semibold">
+                  <td colspan="4" class="px-4 py-2.5 text-right text-slate-600 dark:text-slate-300 text-[13px]">合计（未税）</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-[15px] text-[#DC2626]">¥39,800</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quote Card -->
+      <div class="flex gap-3 msg-enter">
+        <div class="w-8 h-8 rounded-full bg-[#EA580C] flex items-center justify-center flex-shrink-0 text-white text-xs font-bold">AI</div>
+        <div class="max-w-[80%]">
+          <div class="cpq-card bg-white dark:bg-slate-800 rounded-xl p-4" style="box-shadow: var(--cpq-shadow-card); border: 1px solid var(--cpq-border-card);">
+            <div class="flex items-center gap-2 mb-3">
+              <svg class="w-5 h-5 text-[#059669]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <span class="text-[14px] font-semibold text-slate-800 dark:text-slate-100">报价确认</span>
+            </div>
+            <div class="text-[28px] font-bold text-[#DC2626] font-mono mb-2">¥39,800</div>
+            <div class="text-[12px] text-slate-400 mb-3">EVE-HVI-40.0 · 10 物料行 · 基准价 ¥39,800 · 折扣 0%</div>
+            <div class="flex gap-2">
+              <button class="px-5 py-2.5 rounded-lg bg-[#2563EB] text-white text-[13px] font-medium">生成报价单</button>
+              <button class="px-5 py-2.5 rounded-lg border border-slate-200 dark:border-slate-600 text-[13px] text-slate-600 dark:text-slate-300">调整价格</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input -->
+    <div class="px-5 py-3 border-t border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm flex-shrink-0">
+      <div class="flex items-end gap-3">
+        <textarea rows="1" placeholder="输入需求，如：德国客户，家用高压储能，40kWh..." class="flex-1 resize-none rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-3 text-[14px] text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] transition-all" style="min-height:44px; max-height:120px;"></textarea>
+        <button class="w-10 h-10 rounded-xl bg-[#2563EB] text-white flex items-center justify-center hover:bg-[#1D4ED8] transition-colors flex-shrink-0">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Settings Modal -->
+<!-- ============================================================ -->
+<div id="settingsModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(4px);">
+  <div class="bg-white dark:bg-slate-800 rounded-2xl w-[720px] max-h-[85vh] overflow-hidden flex flex-col" style="box-shadow: var(--cpq-shadow-modal);">
+    <!-- Modal Header -->
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-700">
+      <h2 class="text-[16px] font-semibold text-slate-800 dark:text-slate-100">⚙️ 设置</h2>
+      <button onclick="toggleSettings()" class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
+        <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <!-- Tabs + Content -->
+    <div class="flex flex-1 overflow-hidden">
+      <!-- Tab Nav -->
+      <div class="w-[160px] border-r border-slate-200 dark:border-slate-700 py-3 px-2 space-y-0.5 flex-shrink-0">
+        <div class="settings-tab active px-3 py-2 text-[13px] text-slate-600 dark:text-slate-300" onclick="switchSettingsTab(this,0)">🤖 模型配置</div>
+        <div class="settings-tab px-3 py-2 text-[13px] text-slate-600 dark:text-slate-300" onclick="switchSettingsTab(this,1)">🔗 CPQ 连接</div>
+        <div class="settings-tab px-3 py-2 text-[13px] text-slate-600 dark:text-slate-300" onclick="switchSettingsTab(this,2)">⚙️ Agent 行为</div>
+        <div class="settings-tab px-3 py-2 text-[13px] text-slate-600 dark:text-slate-300" onclick="switchSettingsTab(this,3)">🎨 界面</div>
+        <div class="settings-tab px-3 py-2 text-[13px] text-slate-600 dark:text-slate-300" onclick="switchSettingsTab(this,4)">📊 系统信息</div>
+      </div>
+      <!-- Tab Content -->
+      <div class="flex-1 overflow-y-auto p-6">
+        <!-- Tab 0: Model -->
+        <div class="settings-panel space-y-4">
+          <h3 class="text-[14px] font-semibold text-slate-800 dark:text-slate-100 mb-3">模型配置</h3>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">模型提供者</label>
+            <select class="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-[13px] text-slate-800 dark:text-slate-100"><option>DeepSeek</option><option>OpenAI</option><option>Anthropic</option><option>Ollama (本地)</option></select>
+          </div>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">模型名称</label>
+            <select class="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-[13px] text-slate-800 dark:text-slate-100"><option>deepseek-chat</option><option>deepseek-reasoner</option></select>
+          </div>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">API Key</label>
+            <div class="relative">
+              <input type="password" value="••••••••••••••••" class="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 pr-10 text-[13px] text-slate-800 dark:text-slate-100 font-mono">
+              <button class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">👁</button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">Base URL</label>
+            <input type="text" value="https://api.deepseek.com" class="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-[13px] text-slate-800 dark:text-slate-100 font-mono">
+          </div>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">Temperature: <span class="font-mono text-slate-700 dark:text-slate-300">0.7</span></label>
+            <input type="range" min="0" max="2" step="0.1" value="0.7" class="w-full">
+          </div>
+        </div>
+        <!-- Tab 1: CPQ (default hidden) -->
+        <div class="settings-panel space-y-4 hidden">
+          <h3 class="text-[14px] font-semibold text-slate-800 dark:text-slate-100 mb-3">CPQ 连接配置</h3>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">CPQ 地址</label>
+            <input type="text" value="http://172.16.1.115:30000" class="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-[13px] text-slate-800 dark:text-slate-100 font-mono">
+          </div>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">Client ID</label>
+            <input type="text" value="e5cd7e4891bf95d1d19206ce24a7b32e" class="w-full rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-[13px] text-slate-800 dark:text-slate-100 font-mono">
+          </div>
+          <button class="px-4 py-2 rounded-lg border border-[#2563EB] text-[#2563EB] text-[13px] font-medium">测试连接</button>
+        </div>
+        <!-- Tab 2: Agent (hidden) -->
+        <div class="settings-panel space-y-4 hidden">
+          <h3 class="text-[14px] font-semibold text-slate-800 dark:text-slate-100 mb-3">Agent 行为</h3>
+          <div class="flex items-center justify-between py-2">
+            <span class="text-[13px] text-slate-600 dark:text-slate-300">启用子 Agent</span>
+            <div class="w-10 h-5 rounded-full bg-[#059669] relative cursor-pointer"><div class="w-4 h-4 rounded-full bg-white absolute top-0.5 right-0.5 shadow"></div></div>
+          </div>
+          <div class="flex items-center justify-between py-2">
+            <span class="text-[13px] text-slate-600 dark:text-slate-300">报价前确认</span>
+            <div class="w-10 h-5 rounded-full bg-[#059669] relative cursor-pointer"><div class="w-4 h-4 rounded-full bg-white absolute top-0.5 right-0.5 shadow"></div></div>
+          </div>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">最大对话轮次</label>
+            <input type="number" value="20" class="w-24 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-[13px] text-slate-800 dark:text-slate-100">
+          </div>
+        </div>
+        <!-- Tab 3: UI (hidden) -->
+        <div class="settings-panel space-y-4 hidden">
+          <h3 class="text-[14px] font-semibold text-slate-800 dark:text-slate-100 mb-3">界面设置</h3>
+          <div>
+            <label class="block text-[12px] font-medium text-slate-500 mb-1.5">主题</label>
+            <div class="flex gap-2">
+              <button class="px-4 py-2 rounded-lg bg-[#2563EB] text-white text-[12px]">浅色</button>
+              <button class="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-600 text-[12px]">深色</button>
+              <button class="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-600 text-[12px]">自动</button>
+            </div>
+          </div>
+        </div>
+        <!-- Tab 4: System (hidden) -->
+        <div class="settings-panel space-y-3 hidden">
+          <h3 class="text-[14px] font-semibold text-slate-800 dark:text-slate-100 mb-3">系统信息</h3>
+          <div class="flex justify-between py-2 border-b border-slate-100 dark:border-slate-700"><span class="text-[13px] text-slate-500">Agent 状态</span><span class="text-[13px] text-emerald-600 font-medium">● 运行中</span></div>
+          <div class="flex justify-between py-2 border-b border-slate-100 dark:border-slate-700"><span class="text-[13px] text-slate-500">CPQ 连接</span><span class="text-[13px] text-emerald-600">172.16.1.115:30000</span></div>
+          <div class="flex justify-between py-2 border-b border-slate-100 dark:border-slate-700"><span class="text-[13px] text-slate-500">模型</span><span class="text-[13px] text-slate-700 dark:text-slate-300">deepseek-chat</span></div>
+          <div class="flex justify-between py-2 border-b border-slate-100 dark:border-slate-700"><span class="text-[13px] text-slate-500">活跃会话</span><span class="text-[13px] font-mono text-slate-700 dark:text-slate-300">3</span></div>
+        </div>
+        <!-- Footer -->
+        <div class="mt-8 pt-4 border-t border-slate-200 dark:border-slate-700 flex gap-2">
+          <button class="px-4 py-2 rounded-lg bg-[#2563EB] text-white text-[13px] font-medium">保存配置</button>
+          <button class="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-600 text-[13px] text-slate-600 dark:text-slate-300">恢复默认</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== Theme Toggle =====
+function toggleTheme() {
+  const html = document.documentElement;
+  if (html.classList.contains('light')) {
+    html.classList.remove('light');
+    html.classList.add('dark');
+    document.body.style.background = '#0F172A';
+  } else {
+    html.classList.remove('dark');
+    html.classList.add('light');
+    document.body.style.background = '#F0F2F5';
+  }
+}
+
+// ===== Settings Modal =====
+function toggleSettings() {
+  document.getElementById('settingsModal').classList.toggle('hidden');
+}
+
+// ===== Settings Tabs =====
+function switchSettingsTab(el, idx) {
+  document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.settings-panel').forEach((p, i) => {
+    p.classList.toggle('hidden', i !== idx);
+  });
+}
+
+// ===== Auto-resize textarea =====
+document.querySelector('textarea')?.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// Close modal on backdrop click
+document.getElementById('settingsModal')?.addEventListener('click', function(e) {
+  if (e.target === this) toggleSettings();
+});
+</script>
+
+</body>
+</html>

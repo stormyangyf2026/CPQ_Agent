@@ -1,0 +1,22 @@
+{
+  "name": "CPQ Agent - 智能配单",
+  "short_name": "CPQ Agent",
+  "description": "制造业 CPQ 智能配置报价助手 — 自然语言驱动产品配置、BOM 生成、定价、报价",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#F0F2F5",
+  "theme_color": "#2563EB",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
