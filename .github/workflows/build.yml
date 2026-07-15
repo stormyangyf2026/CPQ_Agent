@@ -148,26 +148,19 @@ jobs:
         run: |
           cd frontend
           npm run electron:build:win
-          if (Test-Path release/*.exe) {
+          if (Test-Path release/*.zip) {
             Get-ChildItem release/
           } else {
             Write-Host "❌ 未找到 release 产物"
             exit 1
           }
 
-      - name: 上传 Windows 安装包
+      - name: 上传 Windows 压缩包
         uses: actions/upload-artifact@v4
         with:
           name: cpq-agent-windows
-          path: frontend/release/*.exe
+          path: frontend/release/*.zip
           retention-days: 30
-
-      - name: 上传 Windows 安装包（blockmap）
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpq-agent-windows-blockmap
-          path: frontend/release/*.blockmap
-          retention-days: 7
 
   # ──────────────────────────────────────────
   # Job 3: 发布 Release（仅 tag 触发）
