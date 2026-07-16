@@ -20,12 +20,15 @@ const isDev = !app.isPackaged;
 
 function getBackendDir() {
   if (isDev) return path.join(__dirname, '..', '..', 'backend');
-  return path.join(process.resourcesPath, 'backend');
+  const exeDir = path.dirname(app.getPath('exe'));
+  return path.join(exeDir, 'resources', 'backend');
 }
 
 function getConfigPath() {
   if (isDev) return path.join(__dirname, '..', '..', 'config', 'config.yaml');
-  return path.join(process.resourcesPath, 'config', 'config.yaml');
+  // 通过 exe 所在目录推导，避免 process.resourcesPath 在 Windows 上解析错误
+  const exeDir = path.dirname(app.getPath('exe'));
+  return path.join(exeDir, 'resources', 'config', 'config.yaml');
 }
 
 function findPython() {
@@ -89,6 +92,11 @@ function startBackend() {
 
     console.log(`[main] 后端 port=${BACKEND_PORT}`);
     console.log(`[main] 配置: ${configPath}`);
+
+    // 确认配置文件存在，如果不存在则记录警告
+    if (!fs.existsSync(configPath)) {
+      console.error(`[main] ⚠️ 配置文件不存在: ${configPath}`);
+    }
 
     backendProcess = spawn(cmd, args, {
       cwd: backendDir,

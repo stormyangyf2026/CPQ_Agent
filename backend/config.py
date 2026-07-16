@@ -231,6 +231,13 @@ def _find_config_path(config_path: str | None = None) -> str | None:
     if os.path.exists(candidate):
         return os.path.abspath(candidate)
 
+    # PyInstaller 打包后: 相对于 exe 所在目录的 ../config/config.yaml
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        exe_candidate = os.path.join(exe_dir, '..', 'config', 'config.yaml')
+        if os.path.exists(exe_candidate):
+            return os.path.abspath(exe_candidate)
+
     env_path = os.environ.get("CONFIG_PATH")
     if env_path and os.path.exists(env_path):
         return os.path.abspath(env_path)
@@ -356,6 +363,12 @@ def load_config(config_path: str | None = None) -> Config:
     # 相对于当前文件所在目录的 ../config/config.yaml
     this_dir = os.path.dirname(os.path.abspath(__file__))
     search_paths.append(os.path.join(this_dir, "..", "config", "config.yaml"))
+
+    # PyInstaller 打包后: 相对于 exe 所在目录的 ../config/config.yaml
+    # 适用于客户解压后运行 cpq-backend.exe 的场景
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        search_paths.append(os.path.join(exe_dir, '..', 'config', 'config.yaml'))
 
     # 环境变量
     env_path = os.environ.get("CONFIG_PATH")
