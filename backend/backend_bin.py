@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 PyInstaller 入口 — CPQ Agent 后端
 被打包为独立可执行文件，Electron 在启动时调用它。

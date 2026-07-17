@@ -1,4 +1,4 @@
-// CPQ Agent App — Electron Main Process (跨平台版)
+﻿// CPQ Agent App — Electron Main Process (跨平台版)
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -233,13 +233,28 @@ app.whenReady().then(async () => {
     console.log('[main] 开发模式，跳过自动启动后端');
     createWindow();
   } else {
+    let backendReady = true;
     try {
       await startBackend();
-      await waitForBackend();
+      backendReady = await waitForBackend();
     } catch (err) {
       console.error('[main] 后端启动异常:', err);
+      backendReady = false;
     }
     createWindow();
+    if (!backendReady) {
+      // 窗口加载完成后弹出后端错误提示
+      const errorMsg = backendError
+        ? `后端启动失败: ${backendError}\n\n请检查:\n1. 防火墙是否拦截了端口 ${BACKEND_PORT}\n2. 是否有其他程序占用了 ${BACKEND_PORT} 端口\n3. 杀毒软件是否误杀了 cpq-backend.exe`
+        : `后端无法连接，请检查:\n1. 防火墙是否拦截了端口 ${BACKEND_PORT}\n2. 是否有其他程序占用了 ${BACKEND_PORT} 端口`;
+      mainWindow?.webContents.on('did-finish-load', () => {
+        mainWindow?.webContents.executeJavaScript(`
+          setTimeout(() => {
+            alert(${JSON.stringify(errorMsg)});
+          }, 500);
+        `);
+      });
+    }
   }
 });
 

@@ -7,6 +7,7 @@ CPQ Agent 配置加载器
 
 import os
 import re
+import sys
 import traceback
 import yaml
 from dataclasses import dataclass, field

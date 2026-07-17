@@ -94,9 +94,13 @@ async def lifespan(app: FastAPI):
     try:
         _config = load_config()
         init_agent(_config)
-        print(f"[server] 服务启动完成，端口 58100")
+        port_str = os.environ.get("PORT", "58118")
+        print(f"[server] 服务启动完成，端口 {port_str}")
     except Exception as e:
-        print(f"[server] 启动警告: {e} (服务仍将启动)")
+        print(f"[server] ⚠️ 启动警告: {e}")
+        traceback.print_exc()
+        print(f"[server] ⚠️ 服务将以降级模式运行（配置未加载，Agent 不可用）")
+        print(f"[server] ⚠️ 请检查配置文件路径和格式，确保 config/config.yaml 存在且合法")
     yield
     print("[server] 服务关闭")
 
