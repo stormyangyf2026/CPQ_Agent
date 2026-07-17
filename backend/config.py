@@ -227,10 +227,10 @@ def _find_config_path(config_path: str | None = None) -> str | None:
     if config_path and os.path.exists(config_path):
         return os.path.abspath(config_path)
 
-    this_dir = os.path.dirname(os.path.abspath(__file__))
-    candidate = os.path.join(this_dir, "..", "config", "config.yaml")
-    if os.path.exists(candidate):
-        return os.path.abspath(candidate)
+    # 环境变量（Electron 生产模式必传，优先级最高）
+    env_path = os.environ.get("CONFIG_PATH")
+    if env_path and os.path.exists(env_path):
+        return os.path.abspath(env_path)
 
     # PyInstaller 打包后: 相对于 exe 所在目录的 ../config/config.yaml
     if getattr(sys, 'frozen', False):
@@ -239,9 +239,10 @@ def _find_config_path(config_path: str | None = None) -> str | None:
         if os.path.exists(exe_candidate):
             return os.path.abspath(exe_candidate)
 
-    env_path = os.environ.get("CONFIG_PATH")
-    if env_path and os.path.exists(env_path):
-        return os.path.abspath(env_path)
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(this_dir, "..", "config", "config.yaml")
+    if os.path.exists(candidate):
+        return os.path.abspath(candidate)
 
     return None
 
@@ -350,31 +351,32 @@ def load_config(config_path: str | None = None) -> Config:
     """
     加载配置文件。
 
-    搜索顺序：
-    1. 显式指定的路径
-    2. ../config/config.yaml（相对于 backend/ 目录）
-    3. 环境变量 CONFIG_PATH
-    4. 默认值（Config()）
+    搜索顺序（按优先级）：
+    1. 显式指定的路径（最高优先级）
+    2. 环境变量 CONFIG_PATH（Electron 生产模式下传参用）
+    3. PyInstaller 打包后: 相对于 exe 所在目录的 ../config/config.yaml
+    4. 相对于 backend/ 目录的 ../config/config.yaml（开发模式）
+    5. 默认值（Config()）
     """
     search_paths = []
 
     if config_path:
         search_paths.append(config_path)
 
-    # 相对于当前文件所在目录的 ../config/config.yaml
-    this_dir = os.path.dirname(os.path.abspath(__file__))
-    search_paths.append(os.path.join(this_dir, "..", "config", "config.yaml"))
+    # 环境变量（Electron 生产模式下必传，优先级最高）
+    env_path = os.environ.get("CONFIG_PATH")
+    if env_path:
+        search_paths.append(env_path)
 
     # PyInstaller 打包后: 相对于 exe 所在目录的 ../config/config.yaml
-    # 适用于客户解压后运行 cpq-backend.exe 的场景
+    # 适用于独立运行 cpq-backend.exe 的场景
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         search_paths.append(os.path.join(exe_dir, '..', 'config', 'config.yaml'))
 
-    # 环境变量
-    env_path = os.environ.get("CONFIG_PATH")
-    if env_path:
-        search_paths.append(env_path)
+    # 相对于当前文件所在目录的 ../config/config.yaml（开发模式）
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    search_paths.append(os.path.join(this_dir, "..", "config", "config.yaml"))
 
     for path in search_paths:
         abspath = os.path.abspath(path)
@@ -386,8 +388,8 @@ def load_config(config_path: str | None = None) -> Config:
                     raw = {}
                 return Config.from_dict(raw)
             except Exception as e:
-                print(f"[config] 警告: 加载配置文件失败 {abspath}: {e}")
+                print(f"[config] WARN: failed to load {abspath}: {e}")
                 continue
 
-    print("[config] 未找到配置文件，使用默认配置")
+    print("[config] no config file found, using defaults")
     return Config()
