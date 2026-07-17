@@ -1,8 +1,8 @@
 ﻿model:
   provider: deepseek
-  model_name: deepseek-v4-pro
-  api_key: <待配置大模型密钥>
-  base_url: https://api.deepseek.com
+  model_name: Qwen3-235B-A22B-w8a8
+  api_key: sk-XU6UJMoS2AylYlUQT7fuXt43oTLVUfEmQPnXKkfei2P5Dcwp
+  base_url: https://ai-pool.evebattery.com/v1
   temperature: 0.7
   max_tokens: 4096
   top_p: 0.9
