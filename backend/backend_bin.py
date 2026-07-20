@@ -13,8 +13,11 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 确保 backend 目录在 path 中
+# 确保 backend 目录和 skills/cpq-agent/scripts 在 path 中
 sys.path.insert(0, BASE_DIR)
+_SCRIPTS_DIR = os.path.join(BASE_DIR, 'skills', 'cpq-agent', 'scripts')
+if os.path.isdir(_SCRIPTS_DIR):
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 # 导入 server 模块的 app 对象
 from server import app

@@ -149,9 +149,147 @@ def list_opportunities():
 
 # ==================== 报价 ====================
 
-def list_quotes():
-    """获取报价单列表"""
-    return _request("GET", "/cpq/quote/header/list")
+def list_quotes(keyword=None, status=None):
+    """获取报价单列表，支持按报价单号和状态搜索
+    Example: list_quotes() → 所有报价单
+             list_quotes(keyword="QTE-2026") → 按报价单号搜索
+             list_quotes(status="DRAFT") → 按状态筛选
+    """
+    params = {}
+    if keyword:
+        params["keyword"] = keyword
+    if status:
+        params["status"] = status
+    result = _request("GET", "/cpq/quote/header/list", params=params)
+    # 兼容三种响应格式：
+    # 1. RuoYi 分页: {"total": N, "rows": [...]}
+    # 2. 标准 data: {"data": [...]} 或 {"data": {"records": [...]}}
+    # 3. 直接列表: [...]
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        if "rows" in result:
+            return result["rows"]
+        if "data" in result:
+            data = result["data"]
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("records") or data.get("list") or []
+    return []
+
+
+def get_quote(quote_id):
+    """获取报价单详情（含行项目）
+    Example: get_quote(123) → {header: ..., lineItems: [...]}
+    """
+    return _request("GET", f"/cpq/quote/header/{quote_id}")
+
+
+def create_quote(account_id, contact=None, department=None, quote_date=None, description=None):
+    """创建报价单头（含客户信息）
+    Example: create_quote("acc001", contact="张三") → {quoteId, quoteNo, ...}
+    """
+    body = {
+        "accountId": account_id
+    }
+    if contact:
+        body["contact"] = contact
+    if department:
+        body["department"] = department
+    if quote_date:
+        body["quoteDate"] = quote_date
+    if description:
+        body["description"] = description
+    return _request("POST", "/cpq/quote/header", body=body)
+
+
+def add_quote_line_item(quote_id, model_id=None, material_code=None, material_name=None,
+                        quantity=1, unit=None, unit_price=None, discount_rate=None,
+                        attributes=None, remark=None):
+    """向报价单逐行添加物料
+    Example:
+      add_quote_line_item(456, model_id=2091, quantity=1, unit_price=25000)
+      add_quote_line_item(456, material_code="MAT001", material_name="铜排",
+                          quantity=2, unit_price=500)
+    """
+    body = {
+        "quoteId": quote_id,
+        "quantity": quantity
+    }
+    if model_id:
+        body["modelId"] = model_id
+    if material_code:
+        body["materialCode"] = material_code
+    if material_name:
+        body["materialName"] = material_name
+    if unit:
+        body["unit"] = unit
+    if unit_price is not None:
+        body["unitPrice"] = unit_price
+    if discount_rate is not None:
+        body["discountRate"] = discount_rate
+    if attributes:
+        body["attributes"] = attributes
+    if remark:
+        body["remark"] = remark
+    return _request("POST", "/cpq/quote/lineitem", body=body)
+
+
+def create_quote_full(account_id, line_items, contact=None, department=None,
+                      quote_date=None, description=None):
+    """一站式创建报价单：创建报价单头 → 获取ID → 逐行写入物料
+    Example:
+      line_items = [
+        {"modelId": 2091, "quantity": 1, "unitPrice": 25000},
+        {"materialCode": "MAT001", "materialName": "铜排", "quantity": 2, "unitPrice": 500},
+      ]
+      create_quote_full("acc001", line_items, contact="张三")
+      → {quoteId, quoteNo, lineCount, message}
+    """
+    # 第一步：创建报价单头（含客户信息）
+    header = create_quote(account_id, contact=contact, department=department,
+                          quote_date=quote_date, description=description)
+    if header.get("error"):
+        return header
+
+    # 第二步：从 header 响应中提取新创建的报价单 ID
+    # 响应格式：{"data": {"quoteId": 456}} 或 {"quoteId": 456}
+    raw_header = header.get("data", header)
+    quote_id = raw_header.get("quoteId")
+
+    if not quote_id:
+        # 如果创建头后没有返回 quoteId，尝试查最新一条
+        quotes = list_quotes(status="DRAFT")
+        if isinstance(quotes, list) and quotes:
+            quote_id = quotes[0].get("quoteId")
+
+    if not quote_id:
+        return {"error": True, "message": "创建报价单后无法获取 quoteId", "header": header}
+
+    # 获取报价单编号（从详情查）
+    detail = get_quote(quote_id)
+    header_detail = detail.get("data", detail)
+    quote_no = header_detail.get("quoteNo", f"QTE-{quote_id:04d}")
+
+    # 第三步：逐行写入行项目
+    line_count = 0
+    errors = []
+    for item in line_items:
+        result = add_quote_line_item(quote_id, **item)
+        if result.get("error"):
+            errors.append({"item": item, "error": result.get("message", "unknown")})
+        else:
+            line_count += 1
+
+    return {
+        "quoteId": quote_id,
+        "quoteNo": quote_no,
+        "lineCount": line_count,
+        "totalItems": len(line_items),
+        "errors": errors if errors else None,
+        "message": f"报价单 {quote_no} 创建成功，共 {line_count}/{len(line_items)} 行物料"
+    }
 
 
 # ==================== 定价 ====================
@@ -235,15 +373,34 @@ if __name__ == "__main__":
     elif cmd == "customers":
         print(json.dumps(list_customers(), ensure_ascii=False, indent=2))
     elif cmd == "quotes":
-        print(json.dumps(list_quotes(), ensure_ascii=False, indent=2))
+        keyword = args[0] if args else None
+        print(json.dumps(list_quotes(keyword=keyword), ensure_ascii=False, indent=2))
+    elif cmd == "get-quote":
+        print(json.dumps(get_quote(int(args[0])), ensure_ascii=False, indent=2))
+    elif cmd == "create-quote":
+        account_id = args[0]
+        line_items = json.loads(" ".join(args[1:])) if len(args) > 1 else []
+        print(json.dumps(create_quote_full(account_id, line_items), ensure_ascii=False, indent=2))
     else:
         print("Usage: python3 cpq_api.py <command> [args...]")
-        print("  search <keyword> [configType]")
-        print("  model <modelId>")
-        print("  validate <modelId> <json_selections>")
-        print("  complete <modelId> <json_selections>")
-        print("  guide <modelId> [json_selections]")
-        print("  propagate <modelId> [json_selections]")
-        print("  rules [modelId]")
-        print("  customers")
-        print("  quotes")
+        print("")
+        print("  产品搜索:")
+        print("    search <keyword> [configType]")
+        print("    model <modelId>")
+        print("")
+        print("  配置器:")
+        print("    validate <modelId> <json_selections>")
+        print("    complete <modelId> <json_selections>  ← 验证+BOM+定价一次完成")
+        print("    guide <modelId> [json_selections]")
+        print("    propagate <modelId> [json_selections]")
+        print("    rules [modelId]")
+        print("")
+        print("  CRM:")
+        print("    customers")
+        print("")
+        print("  报价单:")
+        print("    quotes [keyword]                      ← 查报价单列表（支持按单号搜索）")
+        print("    get-quote <quoteId>                   ← 查报价单详情（含行项目）")
+        print("    create-quote <accountId> <json_items> ← 一站式创建报价单（头+行项目）")
+        print("")
+        print("  Example: python3 cpq_api.py create-quote acc001 '[{\"modelId\":2091,\"quantity\":1,\"unitPrice\":25000}]'")

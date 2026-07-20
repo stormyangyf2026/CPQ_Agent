@@ -65,25 +65,72 @@ TOKEN=$(curl -s -X POST 'http://localhost:30000/auth/login' \
 
 ### 流程3：报价单生成
 
-1. 完成配置后 → 关联CRM客户/商机
-2. `POST /cpq/quote/header` 创建报价单头
-3. 关联BOM行项 → 返回报价单ID
+#### 两步流程（核心：create_quote_full 一站式完成）
+
+**步骤A — 找客户**
+- 使用 `search_customers` 按客户名/关键词搜索 CRM 客户
+- 确认 `accountId`（客户ID），用户确认
+
+**步骤B — 调用 create_quote_full 完成报价**
+
+```python
+from skills.cpq_agent.scripts.cpq_api import create_quote_full
+
+result = create_quote_full(
+    account_id="acc001",          # 步骤A获取的客户ID
+    line_items=[                   # BOM物料列表
+        {
+            "modelId": 2091,      # 产品型号ID
+            "quantity": 1,
+            "unitPrice": 25000,   # 单价
+            "attributes": {"电芯型号": "LF304", "电网标准": "EU_VDE"},
+        },
+        {
+            "materialCode": "MAT001",
+            "materialName": "铜排",
+            "quantity": 2,
+            "unitPrice": 500,
+        },
+    ],
+    contact="张三",
+    description="德国客户40kWh高压储能"
+)
+```
+
+`create_quote_full` 内部自动完成三步：
+1. `POST /cpq/quote/header` — 创建报价单头（含客户信息）
+2. `GET /cpq/quote/header/list` — 获取新报价单的ID和编号
+3. 循环 `POST /cpq/quote/lineitem` — 逐行写入BOM物料+价格
+
+返回结果示例：
+```json
+{"quoteId": 456, "quoteNo": "QTE-20260720-0001", "lineCount": 3, "totalItems": 3}
+```
+
+> **注意：** 标品（STANDARD）走「搜索→定价→选客户→create_quote_full」；
+> 非标品/ATO（先配置后报价）走「搜索→配置→BOM展开→定价→选客户→create_quote_full」。
+> 客户信息在报价单头创建时写入，不再是空白的。
 
 ## 核心API
 
 详见 `references/cpq-api-reference.md`
 
-| API | 方法 | 端点 |
-|-----|------|------|
-| 搜索产品 | GET | `/cpq/product/model/search?keyword={}` |
-| 加载模型 | GET | `/cpq/configure/model/{modelId}` |
-| 验证选择 | POST | `/cpq/configure/validate?modelId={}` |
-| 完成配置 | POST | `/cpq/configure/complete?modelId={}&quantity={}` |
-| 向导推荐 | POST | `/cpq/configure/guide?modelId={}` |
-| BOM预览 | POST | `/cpq/configure/bom-preview?modelId={}` |
-| 约束传播 | POST | `/cpq/engine/config/propagate?modelId={}` |
-| CRM客户 | GET | `/cpq/customer/account/list` |
-| CRM商机 | GET | `/cpq/crm/opportunity/list` |
+详见 `references/cpq-api-reference.md`
+
+| 功能 | 函数/API | 说明 |
+|------|----------|------|
+| 搜索产品 | `search_products(keyword)` GET `/cpq/product/model/search` | 按关键词搜索产品型号 |
+| 加载模型 | `load_config_model(modelId)` GET `/cpq/configure/model/{id}` | 获取属性列表、选项 |
+| 验证选择 | `validate_selections(modelId, sel)` POST `/cpq/configure/validate` | 引擎规则验证 |
+| 完成配置 | `complete_configuration(modelId, sel, qty)` POST `/cpq/configure/complete` | 验证+BOM+定价一次完成 |
+| BOM预览 | `get_bom_preview(modelId, sel)` POST `/cpq/configure/bom-preview` | 物料清单预览 |
+| 向导推荐 | `get_guide_step(modelId, sel)` POST `/cpq/configure/guide` | 下一步推荐选项 |
+| 约束传播 | `propagate_constraints(modelId, sel)` POST `/cpq/engine/config/propagate` | 查看各属性可选/禁用选项 |
+| CRM客户 | `list_customers(keyword)` GET `/cpq/customer/account/list` | 按名称/编码搜索客户 |
+| **报价单列表** | `list_quotes(keyword, status)` GET `/cpq/quote/header/list` | 支持按单号/状态搜索 |
+| **报价单详情** | `get_quote(quoteId)` GET `/cpq/quote/header/{id}` | 含行项目 |
+| **一站式创建** | `create_quote_full(accountId, items)` **→ 三步：头+ID+行项目** | 首选方案，完整写入客户和物料 |
+| 定价计算 | `calculate_price(...)` POST `/cpq/engine/pricing/calculate` | 支持折扣/BOM成本
 
 ## 规则引擎使用
 

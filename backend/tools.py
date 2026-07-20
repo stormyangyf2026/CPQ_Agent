@@ -8,11 +8,17 @@ CPQ Agent 工具函数
 
 import json
 import os
+import sys
 import time
 from typing import Any
 
 import requests
 from langchain.tools import tool
+
+# 确保 cpq_api.py 所在目录在搜索路径中
+_CPQ_API_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", "cpq-agent", "scripts")
+if _CPQ_API_DIR not in sys.path:
+    sys.path.insert(0, _CPQ_API_DIR)
 
 from config import CPQConfig
 
@@ -269,28 +275,78 @@ def search_customers(keyword: str) -> list[dict]:
 
 
 @tool
-def create_quote(customer_id: str, items: list[dict]) -> dict:
-    """创建报价单。
+def list_quotes(keyword: str = "", status: str = "") -> list[dict]:
+    """查询报价单列表。
 
-    为指定客户创建报价单，包含报价行项（产品配置结果）。
-    每个行项应包含 modelId、attributes、quantity 等信息。
+    获取 CPQ 系统中的报价单列表，支持按报价单号和状态过滤搜索。
+    创建报价单后可以用此工具查询新报价单的编号（quoteNo）和ID。
+
+    Args:
+        keyword: 搜索关键词，如报价单号 "QTE-20260720-0001"（可选）
+        status: 状态过滤，如 "DRAFT" （可选）
+
+    Returns:
+        list[dict]: 报价单列表，每个报价单包含 quoteId、quoteNo、accountId、
+                    accountName、totalPrice、status 等字段
+    """
+    import cpq_api
+    return cpq_api.list_quotes(keyword=keyword if keyword else None, status=status if status else None)
+
+
+@tool
+def create_quote(customer_id: str, items: list[dict]) -> dict:
+    """创建报价单（一站式：报价单头+行项目）。
+
+    为指定客户创建完整报价单，包含客户信息和所有BOM行项。
+    内部自动三步：创建报价单头 → 获取ID → 逐行写入物料。
 
     Args:
         customer_id: 客户 ID（从 search_customers 返回的 accountId）
-        items: 报价行项列表，每个元素是一个字典，包含：
-               - modelId: 产品型号 ID
-               - attributes: 属性选择字典
+        items: 报价行项列表，每个元素包含：
+               - modelId: 产品型号 ID（可选，有配置的产品）
+               - materialCode: 物料编码（可选）
+               - materialName: 物料名称
                - quantity: 数量
-               - price: (可选) 定价信息
+               - unitPrice: 单价
+               - unit: 单位（可选，默认 PCS）
+               - attributes: 属性选择字典（可选）
+               - remark: 备注（可选）
 
     Returns:
-        dict: 创建的报价单信息，包含 quoteId（报价单ID）
+        dict: 创建的报价单信息，包含：
+              - quoteId: 报价单ID
+              - quoteNo: 报价单编号（如 QTE-20260720-0001）
+              - lineCount: 成功写入的行数
+              - totalItems: 总行数
+              - errors: 写入失败的行（如果有）
     """
-    payload = {
-        "accountId": customer_id,
-        "items": items,
-    }
-    return _request("POST", "/cpq/quote/header", body=payload)
+    # 转换 items 格式为 cpq_api 期望的 line_items 格式
+    line_items = []
+    for item in items:
+        line_item = {
+            "modelId": item.get("modelId"),
+            "materialCode": item.get("materialCode"),
+            "materialName": item.get("materialName", f"产品_{item.get('modelId', '')}"),
+            "quantity": item.get("quantity", 1),
+            "unitPrice": item.get("unitPrice") or item.get("price", 0),
+        }
+        # 只传非 None 的字段
+        line_item = {k: v for k, v in line_item.items() if v is not None}
+        if item.get("unit"):
+            line_item["unit"] = item["unit"]
+        if item.get("attributes"):
+            line_item["attributes"] = item["attributes"]
+        if item.get("remark"):
+            line_item["remark"] = item["remark"]
+        line_items.append(line_item)
+
+    # 调用 cpq_api 一站式创建
+    import cpq_api
+    return cpq_api.create_quote_full(
+        account_id=customer_id,
+        line_items=line_items,
+        description=f"通过Agent创建，共{len(line_items)}行物料",
+    )
 
 
 @tool
@@ -384,7 +440,7 @@ def reverse_match_price(target_price: float, requirements: str = "", keywords: s
         "priceGap": best_match["gap"] if best_match else target_price,
         "recommendation": (
             f"✅ 最佳方案：{best_match['modelName']} ¥{best_match['suggestedPrice']:,.0f} "
-            f"{'在预算内' if best_match['withinBudget'] else f'超出预算 {best_match["gap"]:+,.0f} 元'}"
+            + ("在预算内" if best_match['withinBudget'] else f"超出预算 {best_match['gap']:+,.0f} 元")
         ) if best_match else "未找到可行方案"
     }
 

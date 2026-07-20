@@ -151,7 +151,11 @@ async def sse_stream(agent: Any, messages: list[dict]) -> AsyncGenerator[str, No
         yield f"event: status\ndata: {json.dumps({'status': 'processing', 'message': '正在处理...'})}\n\n"
 
         full_response = ""
-        async for event in agent.astream_events(input_state, version="v2"):
+        async for event in agent.astream_events(
+                input_state,
+                version="v2",
+                config={"recursion_limit": 9999},
+            ):
             # 处理 token 流
             if event.get("event") == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk", {})

@@ -1,13 +1,13 @@
-﻿model:
+model:
   provider: deepseek
-  model_name: Qwen3-235B-A22B-w8a8
-  api_key: sk-XU6UJMoS2AylYlUQT7fuXt43oTLVUfEmQPnXKkfei2P5Dcwp
-  base_url: https://ai-pool.evebattery.com/v1
+  model_name: deepseek-v4-flash
+  api_key: sk-0a496eadeea84473b244dd327dc94943
+  base_url: https://api.deepseek.com
   temperature: 0.7
   max_tokens: 4096
   top_p: 0.9
 cpq:
-  base_url: http://10.100.111.55:2999
+  base_url: http://8.148.208.235:2999
   client_id: e5cd7e4891bf95d1d19206ce24a7b32e
   username: admin
   password: admin123
