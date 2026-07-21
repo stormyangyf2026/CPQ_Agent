@@ -129,6 +129,57 @@ def _request(method: str, path: str, body: dict | None = None, params: dict | No
 # ── 工具函数 ──────────────────────────────────────────────
 
 
+def _extract_items(result: dict | list) -> list:
+    """从多种响应格式中提取产品列表"""
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        if "data" in result:
+            if isinstance(result["data"], list):
+                return result["data"]
+            elif isinstance(result["data"], dict):
+                return result["data"].get("records") or result["data"].get("list") or []
+        elif "rows" in result:
+            return result["rows"]
+    return []
+
+
+def _find_all_products_fallback(keyword: str) -> list[dict]:
+    """兜底：调用 /cpq/product/model/list 分页获取全量产品，再按关键词过滤。
+
+    因为 /cpq/product/model/search 接口数据不完整（只返回约34个产品），
+    而 CPQ 系统有 200+ 个产品（包括 ER/CR 物联网电池系列），
+    所以当 search 返回空时，通过 list 接口手动模糊匹配。
+    """
+    from cpq_api import list_all_products
+    try:
+        result = list_all_products()
+        rows = []
+        if isinstance(result, dict):
+            if "rows" in result:
+                rows = result["rows"]
+            elif "data" in result:
+                d = result["data"]
+                if isinstance(d, list):
+                    rows = d
+                elif isinstance(d, dict):
+                    rows = d.get("records") or d.get("list") or []
+        if not rows:
+            return []
+
+        kw_lower = keyword.lower()
+        matched = []
+        for p in rows:
+            code = (p.get("modelCode") or "").lower()
+            name = (p.get("modelName") or "").lower()
+            cat = (p.get("categoryPath") or "").lower()
+            if kw_lower in code or kw_lower in name or kw_lower in cat:
+                matched.append(p)
+        return matched
+    except Exception:
+        return []
+
+
 @tool
 def search_product(keyword: str, limit: int = 5) -> list[dict]:
     """搜索 CPQ 产品型号。
@@ -145,24 +196,14 @@ def search_product(keyword: str, limit: int = 5) -> list[dict]:
         list[dict]: 匹配的产品型号列表
     """
     result = _request("GET", "/cpq/product/model/search", params={"keyword": keyword})
-    # 处理多种响应格式: {"data": [...]} / {"data": {"records": [...]}} / {"rows": [...]}
-    if isinstance(result, dict):
-        # RuoYi-Vue-Plus 标准格式: {"code":200, "data": [...]}
-        if "data" in result:
-            if isinstance(result["data"], list):
-                items = result["data"]
-            elif isinstance(result["data"], dict):
-                items = result["data"].get("records") or result["data"].get("list") or []
-            else:
-                items = []
-        elif "rows" in result:
-            items = result["rows"]
-        else:
-            items = []
-    elif isinstance(result, list):
-        items = result
-    else:
-        items = []
+    items = _extract_items(result)
+
+    # 兜底：search 接口数据不完整（只返回约34个产品），
+    # 而 CPQ 系统有 200+ 产品（包括 ER/CR 物联网电池系列）。
+    # 如果 search 返回空，尝试用 list 接口全量搜索。
+    if not items:
+        items = _find_all_products_fallback(keyword)
+
     return items[:limit]
 
 
@@ -254,23 +295,7 @@ def search_customers(keyword: str) -> list[dict]:
                     accountName（客户名称）、accountCode（客户编码）等
     """
     result = _request("GET", "/cpq/customer/account/list", params={"keyword": keyword})
-    # 处理多种响应格式
-    if isinstance(result, dict):
-        if "data" in result:
-            if isinstance(result["data"], list):
-                items = result["data"]
-            elif isinstance(result["data"], dict):
-                items = result["data"].get("records") or result["data"].get("list") or []
-            else:
-                items = []
-        elif "rows" in result:
-            items = result["rows"]
-        else:
-            items = []
-    elif isinstance(result, list):
-        items = result
-    else:
-        items = []
+    items = _extract_items(result)
     return items
 
 

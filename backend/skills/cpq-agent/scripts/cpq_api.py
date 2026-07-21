@@ -69,11 +69,26 @@ def _request(method, path, body=None, params=None):
 def search_products(keyword, config_type=None):
     """搜索产品
     Example: search_products("HVI") → [CpqProductModelVo, ...]
+
+    注意：search 接口的数据覆盖范围可能不完整。如果 search 返回空，请尝试
+    调用 list_all_products() 手动过滤以获得全量产品列表。
     """
     params = {"keyword": keyword}
     if config_type:
         params["configType"] = config_type
     return _request("GET", "/cpq/product/model/search", params=params)
+
+
+def list_all_products(page_num=1, page_size=200):
+    """获取全量产品列表（分页）
+
+    使用 /cpq/product/model/list 接口获取完整产品列表（200个），
+    包含物联网电池方案（ER/CR系列）等 search 接口无法覆盖的产品。
+
+    Example: list_all_products() → {"total": 200, "rows": [...]}
+    """
+    params = {"pageNum": str(page_num), "pageSize": str(page_size)}
+    return _request("GET", "/cpq/product/model/list", params=params)
 
 
 # ==================== 配置器 ====================
@@ -254,23 +269,37 @@ def create_quote_full(account_id, line_items, contact=None, department=None,
         return header
 
     # 第二步：从 header 响应中提取新创建的报价单 ID
-    # 响应格式：{"data": {"quoteId": 456}} 或 {"quoteId": 456}
+    # CPQ 后端 POST /cpq/quote/header 返回 {code:200, data:null}
+    # 不走 data 提取，而是通过列表查询找出刚创建的报价单
     raw_header = header.get("data", header)
-    quote_id = raw_header.get("quoteId")
+    quote_id = None
+    if raw_header and isinstance(raw_header, dict):
+        quote_id = raw_header.get("quoteId")
 
     if not quote_id:
-        # 如果创建头后没有返回 quoteId，尝试查最新一条
+        # 兜底：查询刚创建的草稿报价单，按 createTime DESC 排序
+        # 优先匹配当前客户的最新草稿
         quotes = list_quotes(status="DRAFT")
         if isinstance(quotes, list) and quotes:
-            quote_id = quotes[0].get("quoteId")
+            for q in quotes:
+                if q.get("accountId") == account_id:
+                    quote_id = q.get("quoteId")
+                    break
+            if not quote_id:
+                quote_id = quotes[0].get("quoteId")
 
     if not quote_id:
         return {"error": True, "message": "创建报价单后无法获取 quoteId", "header": header}
 
-    # 获取报价单编号（从详情查）
+    # 获取报价单详情，提取 quoteNumber
+    # CPQ 后端返回的键名为 quoteNumber（而非 quoteNo）
     detail = get_quote(quote_id)
-    header_detail = detail.get("data", detail)
-    quote_no = header_detail.get("quoteNo", f"QTE-{quote_id:04d}")
+    header_detail = detail.get("data", detail) if isinstance(detail, dict) else {}
+    quote_no = (
+        header_detail.get("quoteNumber") or
+        header_detail.get("quoteNo") or
+        f"QTE-{quote_id:04d}"
+    )
 
     # 第三步：逐行写入行项目
     line_count = 0
@@ -282,7 +311,7 @@ def create_quote_full(account_id, line_items, contact=None, department=None,
         else:
             line_count += 1
 
-    return {
+    result = {
         "quoteId": quote_id,
         "quoteNo": quote_no,
         "lineCount": line_count,
@@ -290,6 +319,17 @@ def create_quote_full(account_id, line_items, contact=None, department=None,
         "errors": errors if errors else None,
         "message": f"报价单 {quote_no} 创建成功，共 {line_count}/{len(line_items)} 行物料"
     }
+
+    # 如果行项目全部失败（例如 CPQ 后端 lineitem 接口 500），标记为 error
+    if line_count == 0 and errors:
+        result["error"] = True
+        error_msgs = [e.get("error", "未知错误") for e in errors[:3]]
+        result["message"] = (
+            f"报价单 {quote_no} 已创建但行项目全部写入失败: {'; '.join(error_msgs)}。"
+            f"请在系统中手动补充行项目。"
+        )
+
+    return result
 
 
 # ==================== 定价 ====================

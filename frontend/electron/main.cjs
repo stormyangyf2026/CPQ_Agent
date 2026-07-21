@@ -41,6 +41,25 @@ function findPython() {
   return isWin ? 'python' : 'python3';
 }
 
+// ── 工具函数 ─────────────────────────────────────────────
+
+/**
+ * 检查指定端口是否已被占用。
+ * 返回占用进程的 PID，无占用返回 null。
+ */
+function findProcessOnPort(port) {
+  try {
+    const { execSync } = require('child_process');
+    const result = execSync(`netstat -ano | findstr \":${port} "`, { timeout: 3000 }).toString();
+    const lines = result.split('\n').filter(l => l.includes('LISTENING'));
+    if (lines.length === 0) return null;
+    const match = lines[0].match(/(\d+)$/);
+    return match ? parseInt(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── 后端启动 ──────────────────────────────────────────────
 
 function startBackend() {
@@ -98,30 +117,41 @@ function startBackend() {
       console.error(`[main] ⚠️ 配置文件不存在: ${configPath}`);
     }
 
+    // 启动前检查端口是否被占用，避免误导性的 "Python 未安装" 错误
+    const existingPid = findProcessOnPort(BACKEND_PORT);
+    if (existingPid) {
+      const msg = `后端端口 ${BACKEND_PORT} 已被占用 (PID: ${existingPid})。\n请先在任务管理器中结束该进程后重试。`;
+      console.error(`[main] ${msg}`);
+      backendError = msg;
+      reject(new Error(`Port ${BACKEND_PORT} in use by PID ${existingPid}`));
+      return;
+    }
+
     backendProcess = spawn(cmd, args, {
       cwd: backendDir,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: isWin, // Windows 需要 shell 来解析 PATH
+      shell: isWin,
     });
 
     let started = false;
     let output = '';
+    const READY_MARKER = 'Application startup complete';
 
-    backendProcess.stdout.on('data', (data) => {
-      output += data.toString();
-      const line = data.toString().trim();
+    function onBackendOutput(data) {
+      const text = data.toString();
+      output += text;
+      const line = text.trim();
       if (line) console.log(`[backend] ${line}`);
-      if (!started && (output.includes('Application startup complete') || output.includes('服务启动完成'))) {
+      // uvicorn 的 "Application startup complete" 可能出现在 stdout 或 stderr
+      if (!started && output.includes(READY_MARKER)) {
         started = true;
         resolve();
       }
-    });
+    }
 
-    backendProcess.stderr.on('data', (data) => {
-      output += data.toString();
-      console.error(`[backend:err] ${data.toString().trim()}`);
-    });
+    backendProcess.stdout.on('data', onBackendOutput);
+    backendProcess.stderr.on('data', onBackendOutput);
 
     backendProcess.on('error', (err) => {
       const msg = `后端进程启动失败: ${err.message}`;
@@ -131,26 +161,55 @@ function startBackend() {
     });
 
     backendProcess.on('close', (code) => {
-      const msg = `后端进程异常退出 (退出码=${code})。可能原因: Python 未安装或配置错误。`;
-      console.log(`[main] ${msg}`);
-      backendError = msg;
+      if (code !== null) {
+        // 根据退出码和实际情况给出准确的提示
+        const portPid = findProcessOnPort(BACKEND_PORT);
+        let hint = '';
+        if (portPid) {
+          hint = `端口 ${BACKEND_PORT} 已被其他进程占用 (PID: ${portPid})。请结束该进程后重试。`;
+        } else if (isWin && !fs.existsSync(path.join(backendDir, 'cpq-backend.exe'))) {
+          hint = `后端程序文件不存在: ${path.join(backendDir, 'cpq-backend.exe')}。请重新安装。`;
+        } else if (code === 1) {
+          hint = `cpq-backend 初始化失败 (退出码=1)。可能原因:\n1. 配置文件 ${configPath} 损坏或格式错误\n2. 杀毒软件拦截了 cpq-backend.exe\n3. 系统缺少必要的 Visual C++ 运行库`;
+        } else {
+          hint = `后端进程异常退出 (退出码=${code})。`;
+        }
+        const msg = `后端启动失败: ${hint}`;
+        console.log(`[main] ${msg}`);
+        backendError = msg;
+      }
       backendProcess = null;
-      if (!started) reject(new Error(`Backend exited with code ${code}`));
+      if (!started && code !== null) reject(new Error(`Backend exited with code ${code}`));
     });
 
+    // PyInstaller 打包的 exe 初始化较慢（需解压 deepagents），给足够时间
     setTimeout(() => {
       if (!started) {
         console.log('[main] 后端启动超时，尝试继续...');
         resolve();
       }
-    }, 20000);
+    }, 30000);
   });
 }
 
 function stopBackend() {
-  if (backendProcess) {
-    console.log('[main] 关闭后端...');
-    backendProcess.kill('SIGTERM');
+  if (backendProcess && !backendProcess.killed) {
+    console.log('[main] 关闭后端进程...');
+    // Windows 上用 taskkill /T 杀整个进程树
+    if (isWin) {
+      try {
+        const { execSync } = require('child_process');
+        execSync(`taskkill /f /t /pid ${backendProcess.pid} 2>nul`, { timeout: 3000 });
+      } catch {}
+    } else {
+      backendProcess.kill('SIGTERM');
+      // 给 3 秒优雅退出，不行则强杀
+      setTimeout(() => {
+        if (backendProcess && !backendProcess.killed) {
+          try { backendProcess.kill('SIGKILL'); } catch {}
+        }
+      }, 3000);
+    }
     backendProcess = null;
   }
 }
@@ -243,9 +302,8 @@ app.whenReady().then(async () => {
     }
     createWindow();
     if (!backendReady) {
-      // 窗口加载完成后弹出后端错误提示
       const errorMsg = backendError
-        ? `后端启动失败: ${backendError}\n\n请检查:\n1. 防火墙是否拦截了端口 ${BACKEND_PORT}\n2. 是否有其他程序占用了 ${BACKEND_PORT} 端口\n3. 杀毒软件是否误杀了 cpq-backend.exe`
+        ? backendError
         : `后端无法连接，请检查:\n1. 防火墙是否拦截了端口 ${BACKEND_PORT}\n2. 是否有其他程序占用了 ${BACKEND_PORT} 端口`;
       mainWindow?.webContents.on('did-finish-load', () => {
         mainWindow?.webContents.executeJavaScript(`
@@ -259,5 +317,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', stopBackend);
+// Windows 上 before-quit 不保证触发，用 process.on('exit') 兜底
+process.on('exit', stopBackend);
 app.on('window-all-closed', () => { if (!isMac) app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

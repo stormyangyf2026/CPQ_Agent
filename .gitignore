@@ -30,3 +30,6 @@ logs/
 
 # Vite timestamp
 frontend/vite.config.ts.timestamp-*
+
+# Debug test files
+backend/test_*.json
