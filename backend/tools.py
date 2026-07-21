@@ -150,6 +150,7 @@ def _find_all_products_fallback(keyword: str) -> list[dict]:
     因为 /cpq/product/model/search 接口数据不完整（只返回约34个产品），
     而 CPQ 系统有 200+ 个产品（包括 ER/CR 物联网电池系列），
     所以当 search 返回空时，通过 list 接口手动模糊匹配。
+    支持去空格重试（如 "ER 14250" → "ER14250"）。
     """
     from cpq_api import list_all_products
     try:
@@ -167,15 +168,28 @@ def _find_all_products_fallback(keyword: str) -> list[dict]:
         if not rows:
             return []
 
-        kw_lower = keyword.lower()
-        matched = []
+        # 生成多个匹配变体：原始关键词 → 去空格 → 每个单词片段
+        kw_raw = keyword.lower().strip()
+        kw_no_space = kw_raw.replace(" ", "")
+        kw_parts = [p for p in kw_raw.split() if p]
+
+        candidates = set()  # 用 set 避免重复
         for p in rows:
             code = (p.get("modelCode") or "").lower()
             name = (p.get("modelName") or "").lower()
             cat = (p.get("categoryPath") or "").lower()
-            if kw_lower in code or kw_lower in name or kw_lower in cat:
-                matched.append(p)
-        return matched
+            combined = code + " " + name + " " + cat
+
+            if kw_raw in combined or kw_no_space in combined:
+                candidates.add(p.get("modelId"))
+                continue
+
+            # 词片段匹配（每个搜索词至少匹配一个片段）
+            if len(kw_parts) > 1:
+                if all(part in combined for part in kw_parts):
+                    candidates.add(p.get("modelId"))
+
+        return [p for p in rows if p.get("modelId") in candidates]
     except Exception:
         return []
 
