@@ -120,6 +120,10 @@ def build_agent(config: Config) -> Any:
     # 设置 CPQ 配置到 tools 模块
     set_cpq_config(config.cpq)
 
+    # 也把 CPQ URL 注入到 cpq_api 模块（它有自己的独立连接管理）
+    import cpq_api
+    cpq_api.CPQ_URL = config.cpq.base_url
+
     # 初始化 ChatDeepSeek 模型
     model = ChatDeepSeek(
         model=config.model.model_name,

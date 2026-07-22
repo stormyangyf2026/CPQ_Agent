@@ -302,10 +302,24 @@ def create_quote_full(account_id, line_items, contact=None, department=None,
     )
 
     # 第三步：逐行写入行项目
+    # 注意：item 字典用驼峰键（modelId, materialCode, unitPrice），
+    # 而 add_quote_line_item 参数是蛇形（model_id, material_code, unit_price），
+    # 所以需要手动映射，不能直接 **unpack。
     line_count = 0
     errors = []
     for item in line_items:
-        result = add_quote_line_item(quote_id, **item)
+        result = add_quote_line_item(
+            quote_id,
+            model_id=item.get("modelId"),
+            material_code=item.get("materialCode"),
+            material_name=item.get("materialName"),
+            quantity=item.get("quantity", 1),
+            unit=item.get("unit"),
+            unit_price=item.get("unitPrice"),
+            discount_rate=item.get("discountRate"),
+            attributes=item.get("attributes"),
+            remark=item.get("remark"),
+        )
         if result.get("error"):
             errors.append({"item": item, "error": result.get("message", "unknown")})
         else:
