@@ -9,6 +9,7 @@ All functions return JSON-serializable Python dicts.
 import json
 import os
 import sys
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -47,7 +48,8 @@ def _request(method, path, body=None, params=None):
     token = get_token()
     url = f"{CPQ_URL}{path}"
     if params:
-        url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+        query = urllib.parse.urlencode(params, doseq=True)
+        url += "?" + query
 
     headers = {
         "clientid": CLIENT_ID,
@@ -59,7 +61,15 @@ def _request(method, path, body=None, params=None):
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
+            body = json.loads(resp.read())
+            # 检查业务 code（CPQ 后端接口可能返回 HTTP 200 + 业务错误码）
+            if isinstance(body, dict) and body.get("code") and body["code"] != 200:
+                return {
+                    "error": True,
+                    "status": body["code"],
+                    "message": body.get("msg", f"业务错误: code={body['code']}"),
+                }
+            return body
     except urllib.error.HTTPError as e:
         return {"error": True, "status": e.code, "message": str(e)}
 
@@ -251,7 +261,7 @@ def add_quote_line_item(quote_id, model_id=None, material_code=None, material_na
     return _request("POST", "/cpq/quote/lineitem", body=body)
 
 
-def create_quote_full(account_id, line_items, contact=None, department=None,
+def create_quote_full(account_id, line_items, account_name=None, contact=None, department=None,
                       quote_date=None, description=None):
     """一站式创建报价单：创建报价单头 → 获取ID → 逐行写入物料
     Example:
@@ -263,18 +273,33 @@ def create_quote_full(account_id, line_items, contact=None, department=None,
       → {quoteId, quoteNo, lineCount, message}
     """
     # 第一步：创建报价单头（含客户信息）
-    header = create_quote(account_id, contact=contact, department=department,
-                          quote_date=quote_date, description=description)
+    # CPQ 后端 CpqQuoteBo 支持 accountId + accountName 字段
+    body = {"accountId": account_id}
+    if account_name:
+        body["accountName"] = account_name
+    if contact:
+        body["contact"] = contact
+    if department:
+        body["department"] = department
+    if quote_date:
+        body["quoteDate"] = quote_date
+    if description:
+        body["description"] = description
+    header = _request("POST", "/cpq/quote/header", body=body)
     if header.get("error"):
         return header
 
     # 第二步：从 header 响应中提取新创建的报价单 ID
-    # CPQ 后端 POST /cpq/quote/header 返回 {code:200, data:null}
-    # 不走 data 提取，而是通过列表查询找出刚创建的报价单
-    raw_header = header.get("data", header)
+    # CPQ 后端 POST /cpq/quote/header 返回 {code:200, data: "quoteId"}
+    # data 字段现在是字符串类型的 quoteId
+    raw_data = header.get("data")
     quote_id = None
-    if raw_header and isinstance(raw_header, dict):
-        quote_id = raw_header.get("quoteId")
+    if raw_data is not None:
+        if isinstance(raw_data, dict):
+            quote_id = raw_data.get("quoteId")
+        else:
+            # 字符串或数字类型，直接作为 quoteId
+            quote_id = str(raw_data)
 
     if not quote_id:
         # 兜底：查询刚创建的草稿报价单，按 createTime DESC 排序

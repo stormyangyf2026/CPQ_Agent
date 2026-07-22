@@ -333,7 +333,7 @@ def list_quotes(keyword: str = "", status: str = "") -> list[dict]:
 
 
 @tool
-def create_quote(customer_id: str, items: list[dict]) -> dict:
+def create_quote(customer_id: str, items: list[dict], customer_name: str = "") -> dict:
     """创建报价单（一站式：报价单头+行项目）。
 
     为指定客户创建完整报价单，包含客户信息和所有BOM行项。
@@ -350,6 +350,7 @@ def create_quote(customer_id: str, items: list[dict]) -> dict:
                - unit: 单位（可选，默认 PCS）
                - attributes: 属性选择字典（可选）
                - remark: 备注（可选）
+        customer_name: 客户名称（可选，传入后写入报价单的 accountName 字段）
 
     Returns:
         dict: 创建的报价单信息，包含：
@@ -383,6 +384,7 @@ def create_quote(customer_id: str, items: list[dict]) -> dict:
     import cpq_api
     return cpq_api.create_quote_full(
         account_id=customer_id,
+        account_name=customer_name if customer_name else None,
         line_items=line_items,
         description=f"通过Agent创建，共{len(line_items)}行物料",
     )
