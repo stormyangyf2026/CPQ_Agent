@@ -15,7 +15,7 @@ services:
       cpq-backend:
         condition: service_started
     volumes:
-      - ./agent-config/config.yaml:/app/config/config.yaml
+      - ./agent-config/config.yaml:/config/config.yaml
       - ./agent-data:/app/data
     restart: unless-stopped
 
