@@ -163,7 +163,44 @@ jobs:
           retention-days: 30
 
   # ──────────────────────────────────────────
-  # Job 3: 发布 Release（仅 tag 触发）
+  # Job 3: Linux 前端构建 + 部署包
+  # ──────────────────────────────────────────
+  package-linux:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 构建前端（测试环境）
+        run: |
+          cd frontend
+          npm install
+          npm run build -- --mode staging
+
+      - name: 打包
+        run: |
+          mkdir -p deploy
+          cp -r frontend/dist deploy/agent-frontend
+          cp config/staging/config.yaml deploy/agent-config.yaml
+          cp docker-compose.agent.yml deploy/
+          cd deploy && tar czf ../cpq-agent-deploy-v4.tar.gz .
+
+      - name: 上传制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpq-agent-linux-deploy
+          path: cpq-agent-deploy-v4.tar.gz
+          retention-days: 30
+
+  # ──────────────────────────────────────────
+  # Job 4: 发布 Release（仅 tag 触发）
   # ──────────────────────────────────────────
   release:
     needs: build-windows
