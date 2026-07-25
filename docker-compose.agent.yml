@@ -1,5 +1,6 @@
 # CPQ Agent Docker Compose (追加到主 docker-compose.yml)
 # 使用: docker compose -f main.yml -f agent.yml up -d
+# 离线部署：先 docker load < cpq-agent-backend.tar.gz && docker load < cpq-agent-frontend.tar.gz
 
 services:
   cpq-agent-backend:
@@ -19,7 +20,7 @@ services:
     restart: unless-stopped
 
   cpq-agent-frontend:
-    image: agent-frontend:latest
+    image: ghcr.io/stormyangyf2026/cpq_agent/cpq-frontend:latest
     container_name: cpq-agent-frontend
     ports:
       - "57100:80"

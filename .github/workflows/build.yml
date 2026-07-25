@@ -55,7 +55,55 @@ jobs:
           path: cpq-agent-backend.tar.gz
           retention-days: 30
 
-  # ── Job 2: Windows 桌面版 ──
+  # ── Job 2: Docker 前端镜像（离线友好，不再依赖 Docker Hub 拉取 nginx:alpine）──
+  docker-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: 构建前端静态文件
+        run: cd frontend && npm install && npm run build -- --mode staging
+
+      - name: 构建并推送 Docker 镜像（前端 Nginx + 静态文件）
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-frontend:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-frontend:${{ github.sha }}
+
+      - name: 导出镜像为文件（供离线部署下载）
+        if: github.event_name != 'pull_request'
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-frontend:latest
+          docker save ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-frontend:latest | gzip > cpq-agent-frontend.tar.gz
+
+      - name: 上传镜像文件
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpq-agent-frontend-image
+          path: cpq-agent-frontend.tar.gz
+          retention-days: 30
+
+  # ── Job 3: Windows 桌面版 ──
   build-windows:
     runs-on: windows-latest
     if: github.event_name != 'pull_request'
@@ -72,25 +120,21 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: cpq-agent-windows, path: frontend/release/*.zip, retention-days: 30 }
 
-  # ── Job 3: Linux 前端 + 部署配置 ──
+  # ── Job 4: Linux 部署配置（仅配置文件 + docker-compose，静态文件已内嵌到 Docker 镜像）──
   package-linux:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '22' }
-      - run: cd frontend && npm install && npm run build -- --mode staging
       - run: |
           mkdir deploy
-          cp -r frontend/dist deploy/agent-frontend
           cp config/staging/config.yaml deploy/agent-config.yaml
           cp docker-compose.agent.yml deploy/
           cd deploy && tar czf ../cpq-agent-deploy.tar.gz .
       - uses: actions/upload-artifact@v4
         with: { name: cpq-agent-linux-deploy, path: cpq-agent-deploy.tar.gz, retention-days: 30 }
 
-  # ── Job 4: Release ──
+  # ── Job 5: Release ──
   release:
     needs: [build-windows, package-linux]
     runs-on: ubuntu-latest
