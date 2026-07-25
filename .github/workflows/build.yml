@@ -77,8 +77,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
 
-      - name: 构建前端静态文件
-        run: cd frontend && npm install && npm run build -- --mode staging
+      - name: 构建前端静态文件（空 BASE_URL = 走 nginx 同源代理）
+        run: cd frontend && npm install && VITE_AGENT_API_URL= npm run build -- --mode staging
 
       - name: 构建并推送 Docker 镜像（前端 Nginx + 静态文件）
         uses: docker/build-push-action@v6

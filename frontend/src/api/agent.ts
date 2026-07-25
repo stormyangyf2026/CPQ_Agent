@@ -29,7 +29,7 @@ if (typeof window !== 'undefined' && window.__CPQ_BACKEND_URL__) {
     BASE_URL = url
   })
 } else {
-  BASE_URL = import.meta.env.VITE_AGENT_API_URL || 'http://localhost:58100'  // Vite 环境变量
+  BASE_URL = import.meta.env.VITE_AGENT_API_URL ?? 'http://localhost:58100'  // Vite 环境变量（?? 允许空字符串走同源代理）
 }
 
 /**
