@@ -8,6 +8,17 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
 }
 
+// ★ 持久用户标识：存储在 localStorage，同一设备同一浏览器不变
+function getClientId(): string {
+  const key = 'cpq_client_id'
+  let id = localStorage.getItem(key)
+  if (!id) {
+    id = 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+    localStorage.setItem(key, id)
+  }
+  return id
+}
+
 export const useChatStore = defineStore('chat', () => {
   // 当前会话
   const currentSession = ref<Session>({
@@ -42,7 +53,7 @@ export const useChatStore = defineStore('chat', () => {
   async function loadSessions() {
     sessionsLoading.value = true
     try {
-      sessions.value = await fetchSessions()
+      sessions.value = await fetchSessions(getClientId())
     } catch (err) {
       console.warn('无法加载会话列表:', err)
       // 使用空列表
@@ -74,7 +85,7 @@ export const useChatStore = defineStore('chat', () => {
 
     loading.value = true
     try {
-      const sessionData = await fetchSession(sessionId)
+      const sessionData = await fetchSession(sessionId, getClientId())
       currentSession.value = {
         id: sessionData.id,
         title: sessionData.title,
@@ -167,7 +178,9 @@ export const useChatStore = defineStore('chat', () => {
           ...m,
           status: 'done' as Message['status'],
         })),
-        abortController.signal
+        abortController.signal,
+        currentSession.value.id,
+        getClientId()
       )
 
       for await (const event of generator) {
@@ -175,6 +188,14 @@ export const useChatStore = defineStore('chat', () => {
           const msg = getAssistant()
           msg.content = msg.content + event.data
           msg.status = 'streaming'
+        } else if (event.type === 'match_result') {
+          // ★ 存储结构化卡片数据，供 MessageBubble 渲染
+          const msg = getAssistant()
+          ;(msg as any).matchResult = event.data
+        } else if (event.type === 'process_confirm') {
+          // ★ 工艺确认结果，供 MessageBubble 渲染 FeasibilityConfirmPanel
+          const msg = getAssistant()
+          ;(msg as any).processConfirm = event.data
         } else if (event.type === 'status') {
           // 显示处理步骤，去重：相同 label 不重复添加
           const data = event.data || {}
@@ -194,6 +215,8 @@ export const useChatStore = defineStore('chat', () => {
               create_quote: '正在生成报价单...',
               reverse_match_price: '正在反向匹配价格...',
               compare_solutions: '正在对比方案...',
+              select_product: '正在提交工艺确认...',
+              match_product: '正在匹配产品...',
             }
             const tool = data.tool || ''
             label = toolMap[tool] || `正在调取数据...`
@@ -253,7 +276,7 @@ export const useChatStore = defineStore('chat', () => {
    */
   async function removeSession(sessionId: string) {
     try {
-      await apiDeleteSession(sessionId)
+      await apiDeleteSession(sessionId, getClientId())
       sessions.value = sessions.value.filter((s) => s.id !== sessionId)
       if (currentSession.value.id === sessionId) {
         newSession()
@@ -272,6 +295,7 @@ export const useChatStore = defineStore('chat', () => {
     sessionsLoading,
     error,
     messages,
+    addMessage,
     loadSessions,
     newSession,
     switchSession,

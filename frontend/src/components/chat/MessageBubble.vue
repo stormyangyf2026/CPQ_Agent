@@ -3,10 +3,13 @@ import { computed, ref, onMounted, watch } from 'vue'
 import type { Message } from '../../types'
 import { renderMarkdown } from '../../utils/markdown'
 import ThinkingInline from '../widgets/ThinkingInline.vue'
+import MatchResultCard from '../widgets/MatchResultCard.vue'
+import FeasibilityConfirmPanel from '../widgets/FeasibilityConfirmPanel.vue'
 
 const props = defineProps<{
   message: Message
 }>()
+
 
 const isUser = computed(() => props.message.role === 'user')
 const isStreaming = computed(() => props.message.status === 'streaming')
@@ -35,8 +38,10 @@ watch(
 )
 
 function formatTime(isoStr: string): string {
+  if (!isoStr) return ''
   try {
     const date = new Date(isoStr)
+    if (isNaN(date.getTime())) return ''
     return date.toLocaleTimeString('zh-CN', {
       hour: '2-digit',
       minute: '2-digit',
@@ -76,8 +81,18 @@ function formatTime(isoStr: string): string {
           <span class="dot"></span>
           <span class="dot"></span>
         </div>
-        <!-- Markdown 渲染内容 -->
-        <div v-else-if="renderedContent" class="markdown-body" v-html="renderedContent"></div>
+        <!-- ★ 产品卡片 -->
+        <div v-if="(message as any).matchResult" class="widget-wrapper">
+          <MatchResultCard :data="(message as any).matchResult" />
+        </div>
+
+        <!-- ★ 工艺确认面板 -->
+        <div v-if="(message as any).processConfirm" class="widget-wrapper">
+          <FeasibilityConfirmPanel :data="(message as any).processConfirm" />
+        </div>
+
+        <!-- Markdown 渲染内容（独立展示，与卡片共存） -->
+        <div v-if="renderedContent" class="markdown-body" v-html="renderedContent"></div>
         <!-- 错误消息 -->
         <div v-else-if="isError" class="error-text">{{ message.content }}</div>
         <!-- 普通文本回退 -->
@@ -319,3 +334,4 @@ function formatTime(isoStr: string): string {
 }
 </style>
 .thinking-message { padding: 6px 16px; opacity: 0.7; }
+.select-result { margin-top: 8px; padding: 10px; border-radius: 8px; font-size: 13px; background: #f0f9ff; border: 1px solid #bae6fd; } .select-result.success { background: #f0fdf4; border-color: #86efac; }

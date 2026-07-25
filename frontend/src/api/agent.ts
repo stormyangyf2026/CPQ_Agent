@@ -29,7 +29,7 @@ if (typeof window !== 'undefined' && window.__CPQ_BACKEND_URL__) {
     BASE_URL = url
   })
 } else {
-  BASE_URL = 'http://localhost:58100'  // 浏览器开发模式
+  BASE_URL = import.meta.env.VITE_AGENT_API_URL || 'http://localhost:58100'  // Vite 环境变量
 }
 
 /**
@@ -42,10 +42,20 @@ const BASE_DELAY_MS = 1000
  * 将消息历史转换为 API 请求格式
  */
 function messagesToPayload(messages: Message[]) {
-  return messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }))
+  return messages.map((m) => {
+    const out: any = {
+      role: m.role,
+      content: m.content,
+      id: m.id,
+      status: m.status,
+      createdAt: m.createdAt,
+    }
+    // ★ 保留动态属性（matchResult, processConfirm, quoteCreated 等）
+    for (const k of Object.keys(m)) {
+      if (!(k in out)) out[k] = (m as any)[k]
+    }
+    return out
+  })
 }
 
 /**
@@ -54,7 +64,9 @@ function messagesToPayload(messages: Message[]) {
  */
 export async function* sseChat(
   messages: Message[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sessionId?: string,
+  clientId?: string
 ): AsyncGenerator<SSEEvent> {
   let retryCount = 0
   let lastError: Error | null = null
@@ -69,6 +81,8 @@ export async function* sseChat(
         },
         body: JSON.stringify({
           messages: messagesToPayload(messages),
+          sessionId: sessionId || '',
+          clientId: clientId || '',
         }),
         signal,
       })
@@ -121,7 +135,9 @@ export async function* sseChat(
               eventName === 'message_delta' ||
               eventName === 'status' ||
               eventName === 'done' ||
-              eventName === 'error'
+              eventName === 'error' ||
+              eventName === 'match_result' ||
+              eventName === 'process_confirm'
             ) {
               currentEventType = eventName
             }
@@ -140,6 +156,10 @@ export async function* sseChat(
                 // 使用 SSE event: 字段优先确定类型
                 if (currentEventType === 'done') {
                   yield { type: 'done', data: parsed.content || '' }
+                } else if (currentEventType === 'match_result') {
+                  yield { type: 'match_result', data: parsed as any }
+                } else if (currentEventType === 'process_confirm') {
+                  yield { type: 'process_confirm', data: parsed as any }
                 } else if (currentEventType === 'status') {
                   yield { type: 'status', data: parsed }
                 } else if (parsed.error) {
@@ -202,39 +222,25 @@ export async function* sseChat(
 /**
  * 加载会话历史列表
  */
-export async function fetchSessions(): Promise<
+export async function fetchSessions(clientId: string): Promise<
   { id: string; title: string; updatedAt: string; messageCount: number }[]
 > {
-  const response = await fetch(`${BASE_URL}/sessions`)
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
+  const response = await fetch(`${BASE_URL}/sessions?clientId=${encodeURIComponent(clientId)}`)
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.json()
 }
 
-/**
- * 加载单个会话详情
- */
-export async function fetchSession(
-  sessionId: string
-): Promise<{ id: string; title: string; messages: Message[] }> {
-  const response = await fetch(`${BASE_URL}/sessions/${sessionId}`)
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
+export async function fetchSession(sessionId: string, clientId: string): Promise<{ id: string; title: string; messages: Message[] }> {
+  const response = await fetch(`${BASE_URL}/sessions/${sessionId}?clientId=${encodeURIComponent(clientId)}`)
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.json()
 }
 
-/**
- * 删除会话
- */
-export async function deleteSession(sessionId: string): Promise<void> {
-  const response = await fetch(`${BASE_URL}/sessions/${sessionId}`, {
+export async function deleteSession(sessionId: string, clientId: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}/sessions/${sessionId}?clientId=${encodeURIComponent(clientId)}`, {
     method: 'DELETE',
   })
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
 }
 
 /**

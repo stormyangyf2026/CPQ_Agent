@@ -7,3 +7,5 @@ python-dotenv>=1.0
 langchain>=0.3
 langchain-core>=0.3
 langchain-deepseek>=0.1
+opencsv  # 仅在 Java 侧使用，Python 不需要
+openpyxl>=3.0  # CPQ App 文件导入支持

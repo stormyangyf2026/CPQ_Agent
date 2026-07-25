@@ -1,0 +1,29 @@
+# CPQ Agent Docker Compose (追加到主 docker-compose.yml)
+# 使用: docker compose -f main.yml -f agent.yml up -d
+
+services:
+  cpq-agent-backend:
+    image: agent-backend:latest
+    container_name: cpq-agent-backend
+    environment:
+      - PORT=58100
+      - TZ=Asia/Shanghai
+    ports:
+      - "58100:58100"
+    depends_on:
+      cpq-backend:
+        condition: service_started
+    volumes:
+      - ./agent-config/config.yaml:/app/config/config.yaml
+      - ./agent-data:/app/data
+    restart: unless-stopped
+
+  cpq-agent-frontend:
+    image: agent-frontend:latest
+    container_name: cpq-agent-frontend
+    ports:
+      - "57100:80"
+    depends_on:
+      cpq-agent-backend:
+        condition: service_started
+    restart: unless-stopped

@@ -1,46 +1,20 @@
 model:
   provider: deepseek
-  model_name: deepseek-v4-flash
-  api_key: sk-0a496eadeea84473b244dd327dc94943
+  model_name: deepseek-v4-pro
+  api_key: sk-5cefe4230add4f939357147790cec49c
   base_url: https://api.deepseek.com
   temperature: 0.7
   max_tokens: 4096
   top_p: 0.9
 cpq:
-  base_url: http://8.148.208.235:2999
+  base_url: http://localhost:30000
   client_id: e5cd7e4891bf95d1d19206ce24a7b32e
   username: admin
   password: admin123
   timeout: 30
   max_retries: 3
 agent:
-  system_prompt: '你是一个制造业 CPQ（配置-定价-报价）智能助手。
-
-
-    职责:
-
-    1. 理解客户需求，推荐匹配的产品配置
-
-    2. 根据 CPQ 约束规则验证配置可行性
-
-    3. 生成 BOM 物料清单和定价
-
-    4. 支持价格反向匹配和方案对比
-
-    5. 生成报价单
-
-
-    行为准则:
-
-    - 推荐配置前先验证规则，不推荐不合规配置
-
-    - 定价时说明基准价、折扣、建议价、最低限价
-
-    - 反向匹配时明确告知替代方案的取舍
-
-    - 生成报价单前请用户确认
-
-    '
+  system_prompt: ''
   max_turns: 10
   enable_subagents: true
 memory:

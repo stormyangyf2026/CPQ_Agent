@@ -13,7 +13,7 @@ function getDefaultConfig(): Record<ConfigCategory, ConfigItem[]> {
       { key: 'model_max_tokens', label: '最大 Token 数', type: 'number', category: 'model', value: 4096, description: '每次回复的最大 token 数量' },
     ],
     cpq: [
-      { key: 'cpq_api_url', label: 'CPQ 地址', type: 'input', category: 'cpq', value: 'http://localhost:30000', placeholder: 'http://localhost:30000', description: 'CPQ App 后端地址' },
+      { key: 'cpq_api_url', label: 'CPQ 地址', type: 'input', category: 'cpq', value: import.meta.env.VITE_CPQ_API_URL || 'http://localhost:30000', placeholder: 'http://localhost:30000', description: 'CPQ App 后端地址' },
       { key: 'cpq_client_id', label: 'Client ID', type: 'input', category: 'cpq', value: 'e5cd7e4891bf95d1d19206ce24a7b32e', placeholder: 'OAuth2 Client ID', description: 'CPQ 的 OAuth2 客户端' },
       { key: 'cpq_username', label: '用户名', type: 'input', category: 'cpq', value: 'admin', placeholder: 'admin', description: 'CPQ 登录用户名' },
       { key: 'cpq_password', label: '密码', type: 'password', category: 'cpq', value: '', placeholder: 'CPQ 登录密码', description: '用于获取 Access Token' },

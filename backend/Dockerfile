@@ -21,6 +21,6 @@ COPY . .
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:58118/health || exit 1
 
-EXPOSE 58118
+EXPOSE 58100
 
-CMD ["python", "server.py"]
+CMD ["python", "-u", "server.py"]

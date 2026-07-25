@@ -71,6 +71,18 @@ def _request(method, path, body=None, params=None):
                 }
             return body
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            # ★ Token 过期（Java 重启等），清除缓存重试一次
+            global _cached_token
+            _cached_token = None
+            try:
+                token = get_token()
+                headers["Authorization"] = f"Bearer {token}"
+                req2 = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+                with urllib.request.urlopen(req2, timeout=30) as resp2:
+                    return json.loads(resp2.read())
+            except Exception:
+                pass
         return {"error": True, "status": e.code, "message": str(e)}
 
 
@@ -231,27 +243,27 @@ def create_quote(account_id, contact=None, department=None, quote_date=None, des
 
 def add_quote_line_item(quote_id, model_id=None, material_code=None, material_name=None,
                         quantity=1, unit=None, unit_price=None, discount_rate=None,
-                        attributes=None, remark=None):
-    """向报价单逐行添加物料
-    Example:
-      add_quote_line_item(456, model_id=2091, quantity=1, unit_price=25000)
-      add_quote_line_item(456, material_code="MAT001", material_name="铜排",
-                          quantity=2, unit_price=500)
-    """
+                        line_total=None, attributes=None, remark=None):
+    """向报价单逐行添加物料"""
     body = {
         "quoteId": quote_id,
-        "quantity": quantity
+        "quantity": quantity,
+        "itemType": "PRODUCT",
+        "itemName": material_name or "",
+        "itemCode": material_code or "",
+        "unit": unit or "PCS",
     }
     if model_id:
         body["modelId"] = model_id
     if material_code:
         body["materialCode"] = material_code
-    if material_name:
-        body["materialName"] = material_name
-    if unit:
-        body["unit"] = unit
+        body["itemCode"] = material_code
     if unit_price is not None:
         body["unitPrice"] = unit_price
+        body["listPrice"] = unit_price
+        body["netPrice"] = unit_price
+    if line_total is not None:
+        body["lineTotal"] = line_total
     if discount_rate is not None:
         body["discountRate"] = discount_rate
     if attributes:
@@ -286,8 +298,12 @@ def create_quote_full(account_id, line_items, account_name=None, contact=None, d
     if description:
         body["description"] = description
     header = _request("POST", "/cpq/quote/header", body=body)
-    if header.get("error"):
-        return header
+    # ★ 409 (quote_number冲突): 等1秒重新生成时间戳后重试
+    if header.get("code") == 409:
+        import time; time.sleep(1)
+        header = _request("POST", "/cpq/quote/header", body=body)
+    if header.get("code") and header["code"] != 200:
+        return {"error": True, "message": header.get("msg", "创建报价单头失败")}
 
     # 第二步：从 header 响应中提取新创建的报价单 ID
     # CPQ 后端 POST /cpq/quote/header 返回 {code:200, data: "quoteId"}
@@ -302,29 +318,15 @@ def create_quote_full(account_id, line_items, account_name=None, contact=None, d
             quote_id = str(raw_data)
 
     if not quote_id:
-        # 兜底：查询刚创建的草稿报价单，按 createTime DESC 排序
-        # 优先匹配当前客户的最新草稿
-        quotes = list_quotes(status="DRAFT")
-        if isinstance(quotes, list) and quotes:
-            for q in quotes:
-                if q.get("accountId") == account_id:
-                    quote_id = q.get("quoteId")
-                    break
-            if not quote_id:
-                quote_id = quotes[0].get("quoteId")
-
-    if not quote_id:
-        return {"error": True, "message": "创建报价单后无法获取 quoteId", "header": header}
+        return {"error": True, "message": "创建报价单后无法获取 quoteId"}
 
     # 获取报价单详情，提取 quoteNumber
-    # CPQ 后端返回的键名为 quoteNumber（而非 quoteNo）
     detail = get_quote(quote_id)
     header_detail = detail.get("data", detail) if isinstance(detail, dict) else {}
-    quote_no = (
-        header_detail.get("quoteNumber") or
-        header_detail.get("quoteNo") or
-        f"QTE-{quote_id:04d}"
-    )
+    qn = header_detail.get("quoteNumber")
+    qno = header_detail.get("quoteNo")
+    quote_no = qn or qno or f"QTE-{str(quote_id)[-6:]}"
+    print(f"[create_quote_full] quote_id={quote_id} qn={qn} qno={qno} final={quote_no}")
 
     # 第三步：逐行写入行项目
     # 注意：item 字典用驼峰键（modelId, materialCode, unitPrice），
@@ -341,6 +343,7 @@ def create_quote_full(account_id, line_items, account_name=None, contact=None, d
             quantity=item.get("quantity", 1),
             unit=item.get("unit"),
             unit_price=item.get("unitPrice"),
+            line_total=item.get("lineTotal"),
             discount_rate=item.get("discountRate"),
             attributes=item.get("attributes"),
             remark=item.get("remark"),
@@ -404,6 +407,15 @@ def list_config_rules(model_id=None, rule_type=None):
     if rule_type:
         params["ruleType"] = rule_type
     return _request("GET", "/cpq/config/rule/list", params=params)
+
+
+# ==================== 工艺确认状态轮询 ====================
+
+def get_process_status(result_id):
+    """查询工艺确认状态，供 FeasibilityConfirmPanel 轮询"""
+    result = _request("GET", f"/cpq/process/status/{result_id}")
+    data = result.get("data") or result
+    return data
 
 
 # ==================== CLI 入口 ====================

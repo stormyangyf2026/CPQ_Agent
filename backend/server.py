@@ -1,430 +1,247 @@
 #!/usr/bin/env python3
-"""
-CPQ Agent — FastAPI 服务
+"""CPQ Agent — FastAPI + DeepAgents SSE 流式"""
 
-提供 REST API 端点用于：
-- 健康检查
-- Agent 对话（SSE 流式）
-- 配置管理
-- 连接测试
-"""
-
-import asyncio
-import json
-import os
-import sys
-import traceback
+import json, os, sys, traceback, glob, tempfile, shutil
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
-
-import requests
-import uvicorn
-from fastapi import Body, FastAPI, HTTPException, Request
+import requests, uvicorn
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from langchain_deepseek import ChatDeepSeek
-from pydantic import BaseModel, Field
-
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from pydantic import BaseModel
 import tools
-from agent import build_agent
+from agent import build_agent, SYSTEM_PROMPT
 from config import Config, load_config, save_config
-
-# ── 全局状态 ──────────────────────────────────────────────
 
 _config: Config | None = None
 _agent: Any = None
 
+SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "sessions")
 
-# ── Pydantic Models ──────────────────────────────────────
+def _session_path(client_id: str, session_id: str) -> str:
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    return os.path.join(SESSIONS_DIR, f"{client_id}_{session_id}.json")
 
-
-class ChatMessage(BaseModel):
-    role: str = Field(..., description="角色: user / assistant / system")
-    content: str = Field(..., description="消息内容")
-
-
-class ChatRequest(BaseModel):
-    messages: list[ChatMessage] = Field(..., description="对话消息列表")
-
-
-class LoginConfig(BaseModel):
-    username: str = Field(default="admin", description="CPQ 登录用户名")
-    password: str = Field(default="admin123", description="CPQ 登录密码")
-
-
-class UpdateConfigRequest(BaseModel):
-    model_config = {"extra": "ignore"}  # 前端可能发送 UI/System 等额外字段
-
-    model_base_url: str | None = Field(default=None, description="模型 API 基础 URL")
-    model_api_key: str | None = Field(default=None, description="模型 API Key")
-    model_name: str | None = Field(default=None, description="模型名称")
-    model_temperature: float | None = Field(default=None, ge=0, le=2, description="模型温度")
-    cpq_base_url: str | None = Field(default=None, description="CPQ 服务 URL")
-    cpq_client_id: str | None = Field(default=None, description="CPQ 客户端 ID")
-    cpq_username: str | None = Field(default=None, description="CPQ 用户名")
-    cpq_password: str | None = Field(default=None, description="CPQ 密码")
-    agent_max_turns: int | None = Field(default=None, ge=1, le=100, description="最大对话轮次")
-    agent_system_prompt: str | None = Field(default=None, description="系统提示")
-
-
-# ── Agent 生命周期 ──────────────────────────────────────
-
-
-def init_agent(cfg: Config | None = None) -> Any:
-    """初始化或重新加载 Agent"""
-    global _config, _agent
-    if cfg is not None:
-        _config = cfg
-    elif _config is None:
-        _config = load_config()
+def _save_session(client_id: str, session_id: str, messages: list[dict], title: str = ""):
+    """原子写入会话文件"""
+    data = {
+        "id": session_id, "clientId": client_id, "title": title or "新对话",
+        "messages": messages, "createdAt": datetime.now(timezone.utc).isoformat(),
+        "updatedAt": datetime.now(timezone.utc).isoformat()
+    }
+    fp = _session_path(client_id, session_id)
+    tmp = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=SESSIONS_DIR, delete=False, suffix=".json")
     try:
-        _agent = build_agent(_config)
-        print(f"[server] Agent 已初始化 (model={_config.model.model_name})")
-        return _agent
-    except Exception as e:
-        print(f"[server] Agent 初始化失败: {e}")
-        traceback.print_exc()
-        raise
+        json.dump(data, tmp, ensure_ascii=False, default=str)
+        tmp.flush(); os.fsync(tmp.fileno())
+        tmp.close()
+        os.replace(tmp.name, fp)
+    except Exception:
+        if os.path.exists(tmp.name): os.unlink(tmp.name)
 
+def _load_session(client_id: str, session_id: str) -> dict | None:
+    fp = _session_path(client_id, session_id)
+    if not os.path.exists(fp): return None
+    with open(fp, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _list_sessions(client_id: str) -> list[dict]:
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    sessions = []
+    for fp in glob.glob(os.path.join(SESSIONS_DIR, f"{client_id}_*.json")):
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            sessions.append({
+                "id": d.get("id"), "title": d.get("title", "新对话"),
+                "updatedAt": d.get("updatedAt", ""), "messageCount": len(d.get("messages", []))
+            })
+        except: pass
+    sessions.sort(key=lambda s: s["updatedAt"], reverse=True)
+    return sessions
+
+def _delete_session(client_id: str, session_id: str) -> bool:
+    fp = _session_path(client_id, session_id)
+    if os.path.exists(fp):
+        os.unlink(fp)
+        return True
+    return False
+
+class ChatMessage(BaseModel): role: str; content: str
+class ChatRequest(BaseModel): messages: list[ChatMessage]; sessionId: str = ""; clientId: str = ""
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """服务生命周期管理"""
     global _config, _agent
-    try:
-        _config = load_config()
-        init_agent(_config)
-        port_str = os.environ.get("PORT", "58118")
-        print(f"[server] Application startup complete, port {port_str}")
-    except Exception as e:
-        # Use ascii-safe messages to avoid cp1252 encoding errors on Windows CI
-        print(f"[server] WARN: startup exception - {e}")
-        traceback.print_exc()
-        print("[server] WARN: running in degraded mode (config not loaded, Agent unavailable)")
+    _config = load_config()
+    tools.set_cpq_config(_config.cpq)
+    import cpq_api; cpq_api.CPQ_URL = _config.cpq.base_url
+    _agent = build_agent(_config)
+    print(f"[server] Agent ready, CPQ={_config.cpq.base_url}")
     yield
-    print("[server] Server shutting down")
+
+app = FastAPI(title="CPQ Agent", version="3.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
+
+async def sse_stream(messages: list[dict], session_id: str = "", client_id: str = "") -> AsyncGenerator[str, None]:
+    """DeepAgents 流式 → SSE"""
+    tools.set_current_session(session_id)
+    langchain_msgs = []
+    for m in messages:
+        content = m.get("content", "")
+        if m.get("role") == "assistant" and not content.strip():
+            continue  # 跳过前端空占位
+        if m.get("role") == "system":
+            langchain_msgs.append(SystemMessage(content=content))
+        elif m.get("role") == "assistant":
+            langchain_msgs.append(AIMessage(content=content))
+        else:
+            langchain_msgs.append(HumanMessage(content=content))
+
+    # DeepAgent build_agent 已传入 system_prompt，不再重复插入
 
 
-# ── FastAPI App ──────────────────────────────────────────
+    yield f"event: status\ndata: {json.dumps({'status': 'processing', 'message': '分析中...'})}\n\n"
 
-app = FastAPI(
-    title="CPQ Agent API",
-    description="CPQ 智能配置报价助手后端服务",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-# CORS 配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ── 辅助函数 ──────────────────────────────────────────────
-
-
-async def sse_stream(agent: Any, messages: list[dict]) -> AsyncGenerator[str, None]:
-    """将 agent 流式输出转为 SSE 事件流"""
+    full = ""
+    match_sent = False  # ★ 单次LLM调用中只发一次产品卡片（用户要求重匹配会启动新流，天然允许）
     try:
-        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-
-        # 转换消息格式
-        langchain_messages = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "system":
-                langchain_messages.append(SystemMessage(content=content))
-            elif role == "assistant":
-                langchain_messages.append(AIMessage(content=content))
-            else:
-                langchain_messages.append(HumanMessage(content=content))
-
-        # 输入状态
-        input_state = {"messages": langchain_messages}
-
-        # 发送状态事件
-        yield f"event: status\ndata: {json.dumps({'status': 'processing', 'message': '正在处理...'})}\n\n"
-
-        full_response = ""
-        async for event in agent.astream_events(
-                input_state,
-                version="v2",
-                config={"recursion_limit": 9999},
-            ):
-            # 处理 token 流
-            if event.get("event") == "on_chat_model_stream":
+        async for event in _agent.astream_events({"messages": langchain_msgs}, version="v2",
+                                                  config={"recursion_limit": 9999}):
+            kind = event.get("event", "")
+            if kind == "on_chat_model_stream":
                 chunk = event.get("data", {}).get("chunk", {})
-                if hasattr(chunk, "content"):
-                    content = chunk.content
-                    if content:
-                        full_response += content
-                        yield f"event: message_delta\ndata: {json.dumps({'content': content})}\n\n"
+                if hasattr(chunk, "content") and chunk.content:
+                    full += chunk.content
+                    yield f"event: message_delta\ndata: {json.dumps({'content': chunk.content})}\n\n"
+            elif kind == "on_tool_start":
+                name = event.get("name", "")
+                yield f"event: status\ndata: {json.dumps({'status': 'tool_call', 'tool': name})}\n\n"
+            elif kind == "on_tool_end":
+                name = event.get("name", "")
+                output = event.get("data", {}).get("output", {})
+                # ToolMessage → dict
+                tool_data = None
+                if hasattr(output, 'content'):
+                    try: tool_data = json.loads(output.content) if isinstance(output.content, str) else output.content
+                    except: pass
+                elif isinstance(output, dict): tool_data = output
 
-            # 处理工具调用
-            elif event.get("event") == "on_tool_start":
-                tool_name = event.get("name", "unknown")
-                tool_input = event.get("data", {}).get("input", {})
-                yield f"event: status\ndata: {json.dumps({'status': 'tool_call', 'tool': tool_name, 'input': str(tool_input)[:200]})}\n\n"
+                yield f"event: status\ndata: {json.dumps({'status': 'tool_result', 'tool': name})}\n\n"
 
-            elif event.get("event") == "on_tool_end":
-                tool_name = event.get("name", "unknown")
-                tool_output = event.get("data", {}).get("output", {})
-                output_str = str(tool_output)[:200]
-                yield f"event: status\ndata: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'output': output_str})}\n\n"
+                # match_product → 结构化卡片事件（只发一次，防止LLM重复调用）
+                if name == "match_product" and tool_data and not match_sent:
+                    recs = tool_data.get("recommendations", [])
+                    if recs:
+                        match_sent = True
+                        yield f"event: match_result\ndata: {json.dumps({'resultId': tool_data.get('resultId'), 'sessionId': tool_data.get('sessionId'), 'threshold': tool_data.get('threshold',70), 'thresholdPassed': tool_data.get('thresholdPassed',False), 'suggestDiy': tool_data.get('suggestDiy',False), 'totalScored': tool_data.get('totalScored',0), 'recommendations': recs[:10]}, ensure_ascii=False)}\n\n"
 
-        # 追加完成提示
-        completion_suffix = "\n\n✅ **已完成所有工作。** 请问还需要什么帮助？"
-        yield f"event: message_delta\ndata: {json.dumps({'content': completion_suffix})}\n\n"
-        full_response += completion_suffix
-
-        # 发送完成事件
-        yield f"event: done\ndata: {json.dumps({'status': 'completed', 'content': full_response})}\n\n"
-
+                # submit_feasibility_confirm / select_product / confirm_replacement → 工艺确认卡片事件
+                if name in ("submit_feasibility_confirm", "select_product", "confirm_replacement") and tool_data:
+                    yield f"event: process_confirm\ndata: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
     except Exception as e:
-        error_msg = f"Agent 处理出错: {str(e)}"
         traceback.print_exc()
-        yield f"event: error\ndata: {json.dumps(error_msg)}\n\n"
+        yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
-
-# ── 端点 ──────────────────────────────────────────────────
-
-
-@app.get("/health/diagnostics")
-async def health_diagnostics():
-    """详细诊断信息 — 帮助排查启动和连接问题"""
-    import platform
-    import sys
-
-    global _config
-
-    config_loaded = _config is not None
-    agent_ready = _agent is not None
-
-    return {
-        "platform": platform.platform(),
-        "python_version": sys.version,
-        "python_executable": sys.executable,
-        "cwd": os.getcwd(),
-        "config_loaded": config_loaded,
-        "agent_ready": agent_ready,
-        "config": _config.to_dict_safe() if _config else None,
-    }
-
-
-@app.get("/health")
-async def health_check():
-    """健康检查
-
-    检查 CPQ 服务是否可达和 Agent 是否就绪
-    """
-    global _config, _agent
-
-    cpq_ok, cpq_msg = tools.health_check()
-
-    agent_ok = _agent is not None
-    agent_msg = "Agent 就绪" if agent_ok else "Agent 未初始化"
-
-    overall = cpq_ok and agent_ok
-
-    return {
-        "status": "ok" if overall else "degraded",
-        "cpq": {"status": "ok" if cpq_ok else "error", "message": cpq_msg},
-        "agent": {"status": "ok" if agent_ok else "error", "message": agent_msg},
-    }
+    yield f"event: done\ndata: {json.dumps({'status': 'completed'})}\n\n"
+    # ★ 保存会话到文件（只保存完整消息，跳过空占位和流式中的消息）
+    if client_id and session_id:
+        try:
+            clean_msgs = []
+            for m in messages + [{"role": "assistant", "content": full, "id": session_id + "-last", "status": "done", "createdAt": datetime.now(timezone.utc).isoformat()}]:
+                if m.get("role") == "assistant" and not m.get("content", "").strip():
+                    continue  # 跳过空占位
+                if m.get("status") == "streaming":
+                    m = {**m, "status": "done"}
+                clean_msgs.append(m)
+            title = ""
+            for m in clean_msgs:
+                if m.get("role") == "user" and m.get("content"):
+                    title = m["content"][:30]
+                    break
+            _save_session(client_id, session_id, clean_msgs, title)
+        except Exception:
+            pass
 
 
 @app.post("/agent/chat")
-async def agent_chat(request: ChatRequest):
-    """Agent 对话
+async def agent_chat(req: ChatRequest):
+    msgs = [m.model_dump() for m in req.messages]
+    if not msgs: raise HTTPException(400)
+    return StreamingResponse(sse_stream(msgs, req.sessionId, req.clientId), media_type="text/event-stream",
+        headers={"Cache-Control":"no-cache","Connection":"keep-alive","X-Accel-Buffering":"no"})
 
-    接收用户消息，返回 SSE 流式响应。
-    事件类型:
-    - message_delta: 流式文本片段
-    - status: 状态更新（处理中/工具调用/工具结果）
-    - done: 完成事件
-    """
-    global _agent
+@app.post("/agent/confirm")
+async def agent_confirm(data: dict = Body(...)):
+    """前端直接提交工艺确认，绕过LLM"""
+    try:
+        result_id = data.get("resultId")
+        model_id = data.get("modelId")
+        if not result_id or not model_id:
+            raise HTTPException(400, "缺少 resultId 或 modelId")
+        result = tools.submit_feasibility_confirm.func(int(result_id), int(model_id), "CONFIRM")
+        return result
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
-    if _agent is None:
-        raise HTTPException(status_code=503, detail="Agent 未就绪，请稍后重试")
+@app.get("/agent/status/{resultId}")
+async def agent_status(resultId: int):
+    """轮询工艺确认状态，供 FeasibilityConfirmPanel 使用"""
+    try:
+        import cpq_api
+        status = cpq_api.get_process_status(resultId)
+        return status
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
 
-    messages_dict = [msg.model_dump() for msg in request.messages]
-    if not messages_dict:
-        raise HTTPException(status_code=400, detail="消息列表不能为空")
-
-    return StreamingResponse(
-        sse_stream(_agent, messages_dict),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
+@app.get("/health")
+async def health():
+    ok, msg = tools.health_check()
+    return {"status":"ok" if ok else "degraded","cpq":{"status":"ok" if ok else "error","message":msg},"agent":{"status":"ok","message":"DeepAgents"}}
 
 @app.get("/config")
 async def get_config():
-    """获取当前配置（脱敏）"""
-    global _config
-    if _config is None:
-        raise HTTPException(status_code=503, detail="配置未加载")
+    if not _config: raise HTTPException(503)
     return _config.to_dict_safe()
-
 
 @app.put("/config")
 async def update_config(payload: dict = Body(...)):
-    """更新配置并重载 Agent
-
-    兼容前端发送的扁平键名（cpq_api_url → cpq_base_url 等）。
-    """
     global _config, _agent
+    if not _config: _config = load_config()
+    for k, v in payload.items():
+        if v is None: continue
+        if k.startswith("model_"): setattr(_config.model, k[6:], v)
+        elif k.startswith("cpq_"): setattr(_config.cpq, k[4:], v)
+        elif k.startswith("agent_"): setattr(_config.agent, k[6:], v)
+    save_config(_config)
+    _agent = build_agent(_config)
+    return {"status":"ok"}
 
-    if _config is None:
-        _config = load_config()
+# ── 会话管理 ────────────────────────────────────────────
 
-    # 更新模型配置
-    if "model_base_url" in payload and payload["model_base_url"] is not None:
-        _config.model.base_url = payload["model_base_url"]
-    if "model_api_key" in payload and payload["model_api_key"] is not None:
-        _config.model.api_key = payload["model_api_key"]
-    if "model_name" in payload and payload["model_name"] is not None:
-        _config.model.model_name = payload["model_name"]
-    if "model_temperature" in payload and payload["model_temperature"] is not None:
-        _config.model.temperature = payload["model_temperature"]
+@app.get("/sessions")
+async def list_sessions(clientId: str = Query("")):
+    return []  # 暂时禁用会话历史列表
 
-    # 更新 CPQ 配置（兼容前端 cpq_api_url → cpq_base_url, cpq_timeout → cpq.timeout）
-    cpq_url = payload.get("cpq_base_url") or payload.get("cpq_api_url")
-    if cpq_url is not None:
-        _config.cpq.base_url = cpq_url
-    if payload.get("cpq_client_id") is not None:
-        _config.cpq.client_id = payload["cpq_client_id"]
-    if payload.get("cpq_username") is not None:
-        _config.cpq.username = payload["cpq_username"]
-    if payload.get("cpq_password") not in (None, ""):
-        _config.cpq.password = payload["cpq_password"]
-    if payload.get("cpq_timeout") is not None:
-        _config.cpq.timeout = int(payload["cpq_timeout"])
+@app.get("/sessions/{sessionId}")
+async def get_session(sessionId: str, clientId: str = Query("")):
+    if not clientId: raise HTTPException(400, "clientId is required")
+    data = _load_session(clientId, sessionId)
+    if not data: raise HTTPException(404, "会话不存在")
+    return data
 
-    # 更新 Agent 配置（兼容前端 agent_max_iterations → agent_max_turns）
-    max_turns = payload.get("agent_max_turns") or payload.get("agent_max_iterations")
-    if max_turns is not None:
-        _config.agent.max_turns = int(max_turns)
-    if payload.get("agent_system_prompt") is not None:
-        _config.agent.system_prompt = payload["agent_system_prompt"]
-
-    # 持久化到磁盘
-    saved = save_config(_config)
-
-    # 重载 Agent
-    try:
-        init_agent(_config)
-        return {
-            "status": "ok",
-            "message": "配置已更新，Agent 已重载",
-            "persisted": saved,
-        }
-    except Exception as e:
-        # 即使 Agent 重载失败，配置也已更新到内存和磁盘
-        if saved:
-            return {
-                "status": "ok",
-                "message": f"配置已保存到磁盘，但 Agent 重载失败（{e}）。请重启应用使配置生效。",
-                "persisted": True,
-                "agent_error": str(e),
-            }
-        raise HTTPException(status_code=500, detail=f"Agent 重载失败: {e}")
-
-
-@app.post("/config/test-cpq")
-async def test_cpq_connection():
-    """测试 CPQ 连接"""
-    global _config
-    if _config is None:
-        raise HTTPException(status_code=503, detail="配置未加载")
-
-    try:
-        cfg = _config.cpq
-        # 尝试登录
-        resp = requests.post(
-            f"{cfg.base_url}/auth/login",
-            json={
-                "username": cfg.username,
-                "password": cfg.password,
-                "clientId": cfg.client_id,
-                "grantType": "password",
-                "tenantId": "000000",
-            },
-            headers={"Content-Type": "application/json"},
-            timeout=cfg.timeout,
-        )
-        if resp.status_code == 200:
-            body = resp.json()
-            return {
-                "status": "ok",
-                "message": f"CPQ 连接成功 ({cfg.base_url})",
-                "authenticated": True,
-            }
-        else:
-            return {
-                "status": "error",
-                "message": f"CPQ 返回状态码 {resp.status_code}: {resp.text[:200]}",
-            }
-    except requests.exceptions.ConnectionError:
-        return {"status": "error", "message": f"无法连接到 {cfg.base_url}"}
-    except Exception as e:
-        return {"status": "error", "message": f"连接测试失败: {e}"}
-
-
-@app.post("/config/test-model")
-async def test_model_connection():
-    """测试模型连接"""
-    global _config
-    if _config is None:
-        raise HTTPException(status_code=503, detail="配置未加载")
-
-    try:
-        cfg = _config.model
-        model = ChatDeepSeek(
-            model=cfg.model_name,
-            api_key=cfg.api_key or os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url=cfg.base_url,
-            temperature=cfg.temperature,
-            max_tokens=100,
-        )
-        result = model.invoke([{"role": "user", "content": "回复 OK 表示连接正常"}])
-        return {
-            "status": "ok",
-            "message": f"模型连接成功: {result.content[:100]}",
-        }
-    except Exception as e:
-        return {"status": "error", "message": f"模型连接失败: {e}"}
-
-
-# ── 入口 ──────────────────────────────────────────────────
-
+@app.delete("/sessions/{sessionId}")
+async def remove_session(sessionId: str, clientId: str = Query("")):
+    if not clientId: raise HTTPException(400, "clientId is required")
+    if not _delete_session(clientId, sessionId): raise HTTPException(404, "会话不存在")
+    return {"status": "ok"}
 
 def main():
-    """启动 FastAPI 服务"""
-    port = int(os.environ.get("PORT", "58100"))
-    host = os.environ.get("HOST", "0.0.0.0")
-
-    print(f"[server] 启动 CPQ Agent 服务: http://{host}:{port}")
-    print(f"[server] 文档: http://{host}:{port}/docs")
-
-    uvicorn.run(
-        "server:app",
-        host=host,
-        port=port,
-        reload=False,
-        log_level="info",
-    )
-
+    port = int(os.environ.get("PORT","58100"))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False, log_level="info")
 
 if __name__ == "__main__":
     main()

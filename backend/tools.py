@@ -43,6 +43,32 @@ def set_cpq_config(cfg: CPQConfig) -> None:
     _token_cache["expires_at"] = 0
 
 
+# ── 会话级匹配结果缓存（让 LLM 只需传 rank，不需传 resultId/modelId）──
+
+_session_match_cache: dict[str, dict] = {}
+_current_session_id: str = ""
+
+
+def set_current_session(session_id: str):
+    """设置当前会话 ID（由 server.py 在每次 SSE 请求时调用）"""
+    global _current_session_id
+    _current_session_id = session_id or ""
+
+
+def get_cached_match() -> dict | None:
+    """获取当前会话缓存的匹配结果"""
+    return _session_match_cache.get(_current_session_id)
+
+
+def get_last_confirm_ids() -> dict:
+    """获取当前会话最后一次工艺确认的 resultId 和 confirmId"""
+    cached = _session_match_cache.get(_current_session_id, {})
+    return {
+        "resultId": cached.get("lastResultId"),
+        "confirmId": cached.get("lastConfirmId"),
+    }
+
+
 def _get_token() -> str:
     """获取 Bearer Token，带缓存"""
     global _token_cache, _cpq_config
@@ -199,24 +225,51 @@ def search_product(keyword: str, limit: int = 5) -> list[dict]:
     """搜索 CPQ 产品型号。
 
     根据关键词搜索匹配的产品型号，返回产品列表。
-    每个产品包含 modelId（型号ID）、modelCode（型号编码）、modelName（型号名称）、
-    configType（配置类型）等字段。
 
     Args:
-        keyword: 搜索关键词，如 "HVI"、"壁挂"、"储能"
+        keyword: 搜索关键词，如 "ER14250"、"壁挂"
         limit: 返回结果数量上限，默认 5
-
-    Returns:
-        list[dict]: 匹配的产品型号列表
     """
-    result = _request("GET", "/cpq/product/model/search", params={"keyword": keyword})
-    items = _extract_items(result)
+    kw = keyword.strip()
+    items = []
+    seen = set()
 
-    # 兜底：search 接口数据不完整（只返回约34个产品），
-    # 而 CPQ 系统有 200+ 产品（包括 ER/CR 物联网电池系列）。
-    # 如果 search 返回空，尝试用 list 接口全量搜索。
-    if not items:
-        items = _find_all_products_fallback(keyword)
+    def add_result(data):
+        if data and isinstance(data, dict) and data.get("modelId") and data["modelId"] not in seen:
+            seen.add(data["modelId"])
+            items.append(data)
+
+    # ★ 策略1：精确 code 查找（快速）
+    variants = [kw]
+    if not kw.upper().startswith("EVE-"):
+        variants.append("EVE-" + kw)
+    if kw.isdigit() or (kw[0].isdigit() and not kw.startswith("ER")):
+        variants.append("EVE-ER" + kw.lstrip("ER").lstrip("er"))
+    if "-" in kw:
+        base = kw.split("-")[0]
+        if base not in variants: variants.append(base)
+        if not base.upper().startswith("EVE-"): variants.append("EVE-" + base)
+
+    for v in variants[:5]:  # 最多5个变体
+        try:
+            result = _request("GET", f"/cpq/product/model/code/{v}")
+            add_result(result.get("data") or result)
+        except Exception: pass
+
+    # ★ 策略2：如果结果不够，尝试 LIKE 匹配（通过 list 接口按 model_code 前缀）
+    if len(items) < limit:
+        # 提取基础型号（去掉后缀）
+        base_model = kw.split("-")[0].upper()
+        if base_model.startswith("EVE-"):
+            base_model = base_model[4:]
+        try:
+            listResult = _request("GET", "/cpq/product/model/list", params={"keyword": base_model, "pageSize": str(limit + 5)})
+            rows = _extract_items(listResult)
+            for r in rows:
+                code = (r.get("modelCode") or "").upper()
+                if base_model in code:
+                    add_result(r)
+        except Exception: pass
 
     return items[:limit]
 
@@ -598,6 +651,337 @@ def compare_solutions(solution_a_id: int, solution_b_id: int,
         "priceDifference": price_diff,
         "differences": differences,
         "recommendation": recommendation
+    }
+
+
+@tool
+def match_product(category_id: int, requirements: dict) -> dict:
+    """评分匹配：根据客户需求在产品线内进行6维评分匹配，返回Top10推荐。
+
+    将逐轮对话采集的客户需求（用途、温度、尺寸、密封、寿命、认证）提交给CPQ评分引擎，
+    引擎按照产品线配置的维度权重自动评分、排序、过滤，返回达标产品列表。
+    每款产品附评分明细、匹配差异点、报价区间、AI选型理由。
+
+    Args:
+        category_id: 产品线ID（如 507=锂亚ER电池）
+        requirements: 客户需求字典，可包含：
+            - usageType: 用途 (如 "智能水表")
+            - tempMin/tempMax: 温度范围 (℃)
+            - dimensions: {"length": 14.5, "width": 14.5, "height": 50.5} (mm)
+            - sealLevel: 密封等级 (如 "IP67")
+            - lifeCycleYears: 期望寿命 (年)
+            - requiredCertifications: ["CE","UL1642","RoHS"]
+            - extraNotes: 补充说明
+
+    Returns:
+        dict: 匹配结果，包含 recommendations (Top10列表)、thresholdPassed、suggestDiy 等
+    """
+    try:
+        body = {"categoryId": category_id, "requirements": requirements}
+        result = _request("POST", "/cpq/match/score", body=body)
+        # 解包 RuoYi R<T> 响应
+        data = result.get("data") or result
+        # ★ 追加摘要，方便 LLM 一眼看到 resultId + 每款产品的 modelId
+        recs = data.get("recommendations", [])
+        if recs:
+            lines = [f"resultId={data.get('resultId')}"]
+            for r in recs[:10]:
+                lines.append(f"#{r.get('rank')} {r.get('modelCode')}(modelId={r.get('modelId')}) {r.get('totalScore')}分")
+            data["matchSummary"] = " | ".join(lines)
+
+        # ★ 缓存匹配结果，供 select_product 使用（LLM 只需传 rank）
+        if _current_session_id and recs:
+            _session_match_cache[_current_session_id] = {
+                "resultId": data.get("resultId"),
+                "recommendations": recs,
+                "categoryId": category_id,
+                "requirements": requirements,
+            }
+        return data
+    except Exception as e:
+        return {"error": str(e), "message": "评分服务暂时不可用，请稍后重试。您也可以手动输入产品型号如 ER14505，我帮您直接查询。"}
+
+
+@tool
+def submit_feasibility_confirm(result_id: int, model_id: int, action: str = "CONFIRM", comment: str = "", requirement_text: str = "", replaced_model_id: int = None, replaced_reason: str = "") -> dict:
+    """提交工艺可行性确认。
+
+    将销售选定的产品推送到工艺部门审核。必须附带客户需求的自然语言描述。
+
+    Args:
+        result_id: 匹配结果ID（从 match_product 返回的 resultId）
+        model_id: 选定的产品型号ID
+        action: CONFIRM/REJECT/REPLACE，默认 CONFIRM
+        comment: 审核备注
+        requirement_text: ★ 客户需求自然语言描述（如"用途:GPS追踪器, 温度:-40~85℃, 防护:IP54..."）
+        replaced_model_id: 替代产品ID（仅 REPLACE）
+        replaced_reason: 替代推荐理由（仅 REPLACE）
+
+    Returns:
+        dict: {confirmId, status, message, modelId}
+    """
+    try:
+        body = {
+            "resultId": result_id,
+            "modelId": model_id,
+            "action": action,
+            "comment": comment,
+            "requirementText": requirement_text,
+        }
+        if replaced_model_id:
+            body["replacedModelId"] = replaced_model_id
+            body["replacedReason"] = replaced_reason or ""
+        result = _request("POST", "/cpq/process/confirm", body=body)
+        data = result.get("data") or result
+
+        # ★ 补全产品型号信息，供前端卡片展示
+        data["resultId"] = result_id
+        try:
+            prod = _request("GET", f"/cpq/product/model/list", params={"keyword": str(model_id)})
+            rows = []
+            if isinstance(prod, dict):
+                rows = prod.get("rows") or prod.get("data", {}).get("rows", [])
+            if rows:
+                data["modelCode"] = rows[0].get("modelCode", "")
+                data["modelName"] = rows[0].get("modelName", "")
+        except Exception:
+            pass  # 查不到不影响主流程
+
+        return data
+    except Exception as e:
+        return {"error": str(e), "status": "ERROR", "message": "提交审核失败，请稍后重试"}
+
+
+@tool
+def select_product(rank: int, requirement_text: str = "", comment: str = "") -> dict:
+    """选择第几款推荐产品并提交工艺确认。
+
+    销售说"选第X款"时调用此工具。只需传排名 rank=X，不要自己编 resultId 或 modelId。
+    后台会从缓存的 match_product 结果中自动提取真实的 resultId 和 modelId。
+
+    ★ requirement_text: 将第2步确认的完整客户需求原样传入（如"用途：GPS追踪器\\n温度：-40℃ ~ 85℃\\n..."）。
+    这是最准确的客户需求描述，会保存到工艺确认单上，不要省略或改写。
+
+    Args:
+        rank: 排名数字，如1表示选第1款，2表示选第2款
+        requirement_text: ★ 之前确认的完整客户需求文本，原样传入
+        comment: 可选备注
+
+    Returns:
+        dict: 工艺确认结果
+    """
+    cached = _session_match_cache.get(_current_session_id)
+    if not cached:
+        return {"error": "没有缓存的匹配结果", "message": "请先调用 match_product 获取推荐列表，再选择产品"}
+
+    result_id = cached.get("resultId")
+    recs = cached.get("recommendations", [])
+    if not result_id or not recs:
+        return {"error": "缓存数据不完整", "message": "匹配结果缺失，请重新调用 match_product"}
+
+    # 找到指定排名的产品
+    product = None
+    for r in recs:
+        if r.get("rank") == rank:
+            product = r
+            break
+
+    if not product:
+        return {
+            "error": f"排名 {rank} 不存在",
+            "message": f"当前推荐列表共 {len(recs)} 款产品，请选择 1-{len(recs)} 之间的排名"
+        }
+
+    model_id = product.get("modelId")
+    model_code = product.get("modelCode", "")
+    model_name = product.get("modelName", "")
+    print(f"[select_product] session={_current_session_id}, rank={rank}, resultId={result_id}, modelId={model_id}, model={model_code}")
+
+    # ★ LLM 传了确认后的需求文本 → 直接使用，不篡改
+    if requirement_text and requirement_text.strip():
+        req_text = requirement_text.strip()
+    else:
+        # 兜底：从缓存的需求 dict 构建文本
+        req = cached.get("requirements", {}) or {}
+        req_parts = []
+        if isinstance(req, dict):
+            if req.get("usageType"): req_parts.append(f"用途：{req['usageType']}")
+            if req.get("tempMin") is not None or req.get("tempMax") is not None:
+                req_parts.append(f"温度：{req.get('tempMin')}℃ ~ {req.get('tempMax')}℃")
+            if req.get("sealLevel"): req_parts.append(f"防护等级：{req['sealLevel']}")
+            if req.get("lifeCycleYears"): req_parts.append(f"期望寿命：≥{req['lifeCycleYears']}年")
+            certs = req.get("requiredCertifications", [])
+            if certs: req_parts.append(f"认证要求：{'、'.join(certs)}")
+        req_text = "\n".join(req_parts)
+
+    result = submit_feasibility_confirm.func(
+        int(result_id), int(model_id), "CONFIRM",
+        comment=comment,
+        requirement_text=req_text
+    )
+    # ★ 缓存最后确认的 ID，供 confirm_replacement / create_quote 自动使用
+    if _current_session_id:
+        cached = _session_match_cache.get(_current_session_id, {})
+        cached["lastResultId"] = result_id
+        cached["lastConfirmId"] = result.get("confirmId")
+        _session_match_cache[_current_session_id] = cached
+    return result
+
+
+@tool
+def create_quote_from_confirm(result_id: int, customer_id: str, customer_name: str, quantity: int) -> dict:
+    """根据已确认的工艺确认单创建报价单。
+
+    工艺确认通过后，销售可以提供客户信息和采购数量来创建报价。
+    客户信息通过 search_customers 查找获取。
+
+    Args:
+        result_id: 匹配结果ID（从 match_product 或 select_product 返回的 resultId）
+        customer_id: 客户ID（从 search_customers 返回的 accountId）
+        customer_name: 客户名称
+        quantity: 采购数量
+
+    Returns:
+        dict: {quoteId, quoteNo, modelCode, modelName, quantity, unitPrice, totalPrice}
+    """
+    import cpq_api
+
+    # 1. 查状态获取最新确认单的产品信息
+    status = _request("GET", f"/cpq/process/status/{result_id}")
+    status_data = status.get("data") or status
+
+    # ★ 兜底：LLM 可能传了错误的 resultId，从会话缓存取真实的
+    if (not status_data or not status_data.get("modelId")) and _current_session_id:
+        cached = _session_match_cache.get(_current_session_id)
+        if cached and cached.get("resultId"):
+            print(f"[create_quote] resultId={result_id} invalid, fallback to cached {cached['resultId']}")
+            result_id = cached["resultId"]
+            status = _request("GET", f"/cpq/process/status/{result_id}")
+            status_data = status.get("data") or status
+
+    if not status_data or not status_data.get("modelId"):
+        return {"error": "确认单不存在或未找到产品信息"}
+
+    model_id = status_data.get("modelId")
+    model_code = status_data.get("modelCode", "")
+    model_name = status_data.get("modelName", "")
+
+    # 2. 查产品价格（通过 CPQ API，不直连数据库；2次重试）
+    unit_price = 0
+    for attempt in range(2):
+        try:
+            prod_detail = _request("GET", f"/cpq/product/model/{model_id}")
+            prod_data = prod_detail.get("data") or prod_detail
+            if prod_data and prod_data.get("basePrice") is not None:
+                unit_price = float(prod_data["basePrice"])
+                break
+        except Exception:
+            if attempt == 0:
+                import time; time.sleep(2)
+            else:
+                unit_price = 0
+
+    # 3. 创建报价单
+    line_items = [{
+        "modelId": model_id,
+        "materialCode": model_code,
+        "materialName": f"{model_code} {model_name}",
+        "quantity": quantity,
+        "unitPrice": unit_price,
+        "lineTotal": round(unit_price * quantity, 2),
+    }]
+
+    quote_result = cpq_api.create_quote_full(
+        account_id=str(customer_id),
+        account_name=customer_name,
+        line_items=line_items,
+        description=f"Agent 自动创建 - {model_code} x {quantity}",
+    )
+
+    total_price = round(unit_price * quantity, 2)
+    quote_id = str(quote_result.get("quoteId", ""))
+    quote_no = quote_result.get("quoteNo", "")
+    result = {
+        "quoteId": quote_id,
+        "quoteNo": quote_no,
+        "quoteUrl": f"{(_cpq_config.base_url.replace(':30000',':3000') if _cpq_config else 'http://localhost:3000')}/quoting/{quote_id}",
+        "modelCode": model_code,
+        "modelName": model_name,
+        "quantity": quantity,
+        "unitPrice": unit_price,
+        "totalPrice": total_price,
+    }
+    if quote_result.get("error"):
+        result["warning"] = quote_result.get("message", "行项目写入可能有问题，请在系统中手动补充")
+    print(f"[create_quote] rid={result_id} model={model_code} price={unit_price} total={total_price} quote={quote_no}")
+    return result
+
+
+@tool
+def confirm_replacement(confirm_id: int = 0, accept: bool = True) -> dict:
+    """确认或拒绝工艺推荐的替代产品。
+
+    当工艺工程师推荐了替代产品后，销售可以说"接受替代"或"坚持原选"来调用此工具。
+    confirm_id 可不传，系统会自动使用最近一次 select_product 的确认单ID。
+
+    Args:
+        confirm_id: 确认单ID（可选，不传则自动取缓存值）
+        accept: True=接受替代产品, False=坚持原选择
+
+    Returns:
+        dict: 处理结果
+    """
+    if not confirm_id or confirm_id == 0:
+        ids = get_last_confirm_ids()
+        confirm_id = ids.get("confirmId") or 0
+        if not confirm_id:
+            return {"error": "未找到确认单ID", "message": "请先选择产品再操作替代"}
+    try:
+        body = {"action": "CONFIRM_REPLACEMENT", "confirmId": confirm_id, "accept": accept}
+        result = _request("POST", "/cpq/process/confirm", body=body)
+        data = result.get("data") or result
+        return data
+    except Exception as e:
+        return {"error": str(e), "message": "操作失败，请稍后重试"}
+
+
+@tool
+def check_process_status(result_id: int = 0) -> dict:
+    """查询工艺确认单状态。
+
+    用户询问"工艺确认进度""审批状态""审核完了吗"时调用。
+    如果用户提供了审批编号（如 #287183040），优先用该编号查询；
+    没提供时 resultId=0，系统自动从会话缓存中取最近一次的。
+
+    Args:
+        result_id: 审批编号(recordId)或匹配结果ID(resultId)，0表示从缓存取
+
+    Returns:
+        dict: {status, modelCode, modelName, recordId, chainId, replacedModelCode, replacedReason}
+    """
+    if not result_id or result_id == 0:
+        ids = get_last_confirm_ids()
+        result_id = ids.get("resultId") or 0
+    if not result_id:
+        return {"error": "未找到活跃的工艺确认单", "message": "请先完成产品选择或提供审批编号"}
+    import cpq_api
+
+    # ★ 用户可能提供的是 recordId，通过 byRecord 接口查询
+    status = cpq_api._request("GET", f"/cpq/process/status/byRecord/{result_id}")
+    data = status.get("data") or status
+    if data and data.get("status") != "NOT_FOUND":
+        pass  # 找到了
+    else:
+        # 兜底：尝试 resultId 直接查
+        status = cpq_api._request("GET", f"/cpq/process/status/{result_id}")
+        data = status.get("data") or status
+    return {
+        "status": data.get("status","?"),
+        "modelCode": data.get("modelCode",""),
+        "modelName": data.get("modelName",""),
+        "recordId": data.get("recordId","") or data.get("chainId",""),
+        "replacedModelCode": data.get("replacedModelCode",""),
+        "replacedReason": data.get("replacedReason",""),
     }
 
 
