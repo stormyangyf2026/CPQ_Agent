@@ -1,4 +1,4 @@
-﻿name: Docker CI — Build & Package
+name: Docker CI — Build & Package
 
 on:
   push:
@@ -6,16 +6,14 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: stormyangyf2026/cpq_agent
 
 jobs:
-  # ──────────────────────────────────────────
-  # Job 1: Docker 构建 + 测试（Linux）
-  # ──────────────────────────────────────────
+  # ── Job 1: Docker 后端镜像 ──
   docker-backend:
     runs-on: ubuntu-latest
     permissions:
@@ -23,11 +21,8 @@ jobs:
       packages: write
 
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
 
       - name: 登录 GitHub Container Registry
         if: github.event_name != 'pull_request'
@@ -45,178 +40,64 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-backend:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-backend:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      - name: 启动容器并健康检查
+      - name: 导出镜像为文件（供离线部署下载）
+        if: github.event_name != 'pull_request'
         run: |
-          docker run -d --name cpq-test \
-            -p 58118:58118 \
-            -e DEEPSEEK_API_KEY=test-key \
-            -e PORT=58118 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-backend:${{ github.sha }}
-          # 等待服务启动（后端加载 deepagents/langchain 较重，需要更多时间）
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:58118/health; then
-              echo "✅ 后端健康检查通过"
-              exit 0
-            fi
-            echo "等待后端启动... ($i/30)"
-            sleep 3
-          done
-          echo "❌ 后端启动超时"
-          docker logs cpq-test
-          exit 1
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-backend:latest
+          docker save ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cpq-backend:latest | gzip > cpq-agent-backend.tar.gz
 
-  # ──────────────────────────────────────────
-  # Job 2: Windows 打包（PyInstaller + Electron）
-  # ──────────────────────────────────────────
+      - name: 上传镜像文件
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpq-agent-backend-image
+          path: cpq-agent-backend.tar.gz
+          retention-days: 30
+
+  # ── Job 2: Windows 桌面版 ──
   build-windows:
     runs-on: windows-latest
     if: github.event_name != 'pull_request'
-
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: cd backend && pip install -r requirements.txt pyinstaller && pyinstaller cpq-backend-win.spec --clean
+      - uses: actions/upload-artifact@v4
+        with: { name: cpq-backend-exe, path: backend/dist/cpq-backend.exe, retention-days: 7 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: cd frontend && npm install && npm run electron:build:win
+      - uses: actions/upload-artifact@v4
+        with: { name: cpq-agent-windows, path: frontend/release/*.zip, retention-days: 30 }
 
-      - name: 设置 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: 安装 Python 依赖
-        run: |
-          cd backend
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
-
-      - name: PyInstaller 构建 cpq-backend.exe
-        run: |
-          cd backend
-          pyinstaller cpq-backend-win.spec --distpath dist --workpath build --clean
-          if (Test-Path dist/cpq-backend.exe) {
-            Write-Host "✅ cpq-backend.exe 构建成功 ($((Get-Item dist/cpq-backend.exe).Length) bytes)"
-          } else {
-            Write-Host "❌ cpq-backend.exe 未找到"
-            exit 1
-          }
-
-      - name: 烟雾测试 — 启动后端并检查 /health
-        continue-on-error: true
-        run: |
-          Write-Host "启动 cpq-backend.exe 进行烟雾测试..."
-          $proc = Start-Process -FilePath "backend/dist/cpq-backend.exe" -NoNewWindow -PassThru -Environment @{PORT="58119"; HOST="127.0.0.1"}
-          Start-Sleep -Seconds 5
-          try {
-            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:58119/health" -UseBasicParsing -TimeoutSec 5
-            if ($resp.StatusCode -eq 200) {
-              Write-Host "✅ 烟雾测试通过 — /health 返回 $($resp.StatusCode)"
-            } else {
-              Write-Host "⚠️ 烟雾测试: /health 返回 $($resp.StatusCode)"
-            }
-          } catch {
-            Write-Host "⚠️ 烟雾测试失败: $_"
-          }
-          if ($proc -and !$proc.HasExited) {
-            $proc.Kill()
-            Write-Host "后端进程已终止"
-          }
-
-      - name: 上传 backend exe 产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpq-backend-exe
-          path: backend/dist/cpq-backend.exe
-          retention-days: 7
-
-      - name: 设置 Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: 安装前端依赖
-        run: |
-          cd frontend
-          npm install
-
-      - name: 拷贝 cpq-backend.exe 到 backend 目录
-        run: |
-          Copy-Item backend/dist/cpq-backend.exe backend/cpq-backend.exe
-          Write-Host "✅ cpq-backend.exe 就绪"
-
-      - name: Electron Builder 打包 Windows
-        run: |
-          cd frontend
-          npm run electron:build:win
-          if (Test-Path release/*.zip) {
-            Get-ChildItem release/
-          } else {
-            Write-Host "❌ 未找到 release 产物"
-            exit 1
-          }
-
-      - name: 上传 Windows 压缩包
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpq-agent-windows
-          path: frontend/release/*.zip
-          retention-days: 30
-
-  # ──────────────────────────────────────────
-  # Job 3: Linux 前端构建 + 部署包
-  # ──────────────────────────────────────────
+  # ── Job 3: Linux 前端 + 部署配置 ──
   package-linux:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: 构建前端（测试环境）
-        run: |
-          cd frontend
-          npm install
-          npm run build -- --mode staging
-
-      - name: 打包
-        run: |
-          mkdir -p deploy
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: cd frontend && npm install && npm run build -- --mode staging
+      - run: |
+          mkdir deploy
           cp -r frontend/dist deploy/agent-frontend
           cp config/staging/config.yaml deploy/agent-config.yaml
           cp docker-compose.agent.yml deploy/
-          cd deploy && tar czf ../cpq-agent-deploy-v4.tar.gz .
+          cd deploy && tar czf ../cpq-agent-deploy.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with: { name: cpq-agent-linux-deploy, path: cpq-agent-deploy.tar.gz, retention-days: 30 }
 
-      - name: 上传制品
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpq-agent-linux-deploy
-          path: cpq-agent-deploy-v4.tar.gz
-          retention-days: 30
-
-  # ──────────────────────────────────────────
-  # Job 4: 发布 Release（仅 tag 触发）
-  # ──────────────────────────────────────────
+  # ── Job 4: Release ──
   release:
-    needs: build-windows
+    needs: [build-windows, package-linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-
+    permissions: { contents: write }
     steps:
-      - name: 下载 Windows 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: cpq-agent-windows
-
-      - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: '*.zip'
-          generate_release_notes: true
+      - uses: actions/download-artifact@v4
+        with: { name: cpq-agent-windows }
+      - uses: softprops/action-gh-release@v2
+        with: { files: '*.zip', generate_release_notes: true }
