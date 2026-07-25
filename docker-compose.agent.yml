@@ -3,7 +3,7 @@
 
 services:
   cpq-agent-backend:
-    image: agent-backend:latest
+    image: ghcr.io/stormyangyf2026/cpq_agent/cpq-backend:latest
     container_name: cpq-agent-backend
     environment:
       - PORT=58100
