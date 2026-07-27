@@ -874,7 +874,7 @@ def create_quote_from_confirm(result_id: int, customer_id: str, customer_name: s
 
     # 3. 创建报价单 — 统一用 _request，不依赖 cpq_api 独立 token
     quote_body = {
-        "accountId": str(customer_id),
+        "accountId": int(customer_id),
         "accountName": customer_name,
         "description": f"Agent auto - {model_code} x {quantity}",
     }
