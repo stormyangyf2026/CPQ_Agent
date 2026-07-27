@@ -52,6 +52,7 @@ class ModelConfig:
 @dataclass
 class CPQConfig:
     base_url: str = "http://localhost:30000"
+    frontend_url: str = "http://localhost:3000"   # CPQ Portal 前端地址（生成报价链接用）
     client_id: str = "e5cd7e4891bf95d1d19206ce24a7b32e"
     username: str = "admin"
     password: str = "admin123"
@@ -153,6 +154,7 @@ class Config:
             c = resolved["cpq"]
             cfg.cpq = CPQConfig(
                 base_url=c.get("base_url", "http://localhost:30000"),
+                frontend_url=c.get("frontend_url", "http://localhost:3000"),
                 client_id=c.get("client_id", "e5cd7e4891bf95d1d19206ce24a7b32e"),
                 username=c.get("username", "admin"),
                 password=c.get("password", "admin123"),
@@ -198,6 +200,7 @@ class Config:
             },
             "cpq": {
                 "base_url": self.cpq.base_url,
+                "frontend_url": self.cpq.frontend_url,
                 "client_id": self.cpq.client_id,
                 "username": self.cpq.username,
                 "password": "******" if self.cpq.password else "",
@@ -276,6 +279,7 @@ def save_config(cfg: Config, config_path: str | None = None) -> bool:
             },
             "cpq": {
                 "base_url": cfg.cpq.base_url,
+                "frontend_url": cfg.cpq.frontend_url,
                 "client_id": cfg.cpq.client_id,
                 "username": cfg.cpq.username,
                 "password": cfg.cpq.password,

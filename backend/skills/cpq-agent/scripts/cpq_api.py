@@ -24,6 +24,15 @@ def get_token():
     global _cached_token
     if _cached_token:
         return _cached_token
+    # ★ 优先从 tools.py 的 token 缓存获取（统一 token 管理）
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/../../../")
+        from tools import _get_token as _tools_get_token
+        _cached_token = _tools_get_token()
+        return _cached_token
+    except Exception:
+        pass
 
     data = json.dumps({
         "username": "admin",

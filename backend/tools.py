@@ -66,6 +66,7 @@ def get_last_confirm_ids() -> dict:
     return {
         "resultId": cached.get("lastResultId"),
         "confirmId": cached.get("lastConfirmId"),
+        "recordId": cached.get("lastRecordId"),      # ★ 审批编号
     }
 
 
@@ -819,11 +820,12 @@ def select_product(rank: int, requirement_text: str = "", comment: str = "") -> 
         comment=comment,
         requirement_text=req_text
     )
-    # ★ 缓存最后确认的 ID，供 confirm_replacement / create_quote 自动使用
+    # ★ 缓存最后确认的 ID，供 check_process_status / confirm_replacement / create_quote 自动使用
     if _current_session_id:
         cached = _session_match_cache.get(_current_session_id, {})
         cached["lastResultId"] = result_id
         cached["lastConfirmId"] = result.get("confirmId")
+        cached["lastRecordId"] = result.get("recordId")      # ★ 审批编号（#开头）
         _session_match_cache[_current_session_id] = cached
     return result
 
@@ -836,88 +838,75 @@ def create_quote_from_confirm(result_id: int, customer_id: str, customer_name: s
     客户信息通过 search_customers 查找获取。
 
     Args:
-        result_id: 匹配结果ID（从 match_product 或 select_product 返回的 resultId）
+        result_id: 匹配结果ID（从 match_product 或 select_product 返回的 resultId），0=从缓存取
         customer_id: 客户ID（从 search_customers 返回的 accountId）
         customer_name: 客户名称
         quantity: 采购数量
 
     Returns:
-        dict: {quoteId, quoteNo, modelCode, modelName, quantity, unitPrice, totalPrice}
+        dict: {quoteId, quoteNo, modelCode, modelName, quantity, unitPrice, totalPrice, quoteUrl}
     """
-    import cpq_api
-
-    # 1. 查状态获取最新确认单的产品信息
-    status = _request("GET", f"/cpq/process/status/{result_id}")
-    status_data = status.get("data") or status
-
-    # ★ 兜底：LLM 可能传了错误的 resultId，从会话缓存取真实的
-    if (not status_data or not status_data.get("modelId")) and _current_session_id:
-        cached = _session_match_cache.get(_current_session_id)
-        if cached and cached.get("resultId"):
-            print(f"[create_quote] resultId={result_id} invalid, fallback to cached {cached['resultId']}")
-            result_id = cached["resultId"]
-            status = _request("GET", f"/cpq/process/status/{result_id}")
-            status_data = status.get("data") or status
-
+    # 1. 优先用 recordId（审批编号）；兜底用 resultId
+    if result_id == 0:
+        ids = get_last_confirm_ids()
+        result_id = ids.get("recordId") or ids.get("resultId") or 0
+    status_result = _request("GET", f"/cpq/process/status/byRecord/{result_id}")
+    status_data = status_result.get("data") or status_result
+    if not status_data or status_data.get("status") == "NOT_FOUND":
+        status_result = _request("GET", f"/cpq/process/status/{result_id}")
+        status_data = status_result.get("data") or status_result
     if not status_data or not status_data.get("modelId"):
-        return {"error": "确认单不存在或未找到产品信息"}
+        return {"error": "确认单不存在或未找到产品信息", "message": "请先完成产品选择和工艺确认"}
 
     model_id = status_data.get("modelId")
     model_code = status_data.get("modelCode", "")
     model_name = status_data.get("modelName", "")
 
-    # 2. 查产品价格（通过 CPQ API，不直连数据库；2次重试）
+    # 2. 查产品价格
     unit_price = 0
-    for attempt in range(2):
-        try:
-            prod_detail = _request("GET", f"/cpq/product/model/{model_id}")
-            prod_data = prod_detail.get("data") or prod_detail
-            if prod_data and prod_data.get("basePrice") is not None:
-                unit_price = float(prod_data["basePrice"])
-                break
-        except Exception:
-            if attempt == 0:
-                import time; time.sleep(2)
-            else:
-                unit_price = 0
+    try:
+        prod = _request("GET", f"/cpq/product/model/{model_id}")
+        prod_data = prod.get("data") or prod
+        if prod_data and prod_data.get("basePrice") is not None:
+            unit_price = float(prod_data["basePrice"])
+    except Exception:
+        unit_price = 0
 
-    # 3. 创建报价单
-    line_items = [{
-        "modelId": model_id,
-        "materialCode": model_code,
-        "materialName": f"{model_code} {model_name}",
-        "quantity": quantity,
-        "unitPrice": unit_price,
-        "lineTotal": round(unit_price * quantity, 2),
-    }]
+    # 3. 创建报价单 — 统一用 _request，不依赖 cpq_api 独立 token
+    quote_body = {
+        "accountId": str(customer_id),
+        "accountName": customer_name,
+        "description": f"Agent auto - {model_code} x {quantity}",
+    }
+    header = _request("POST", "/cpq/quote/header", body=quote_body)
+    quote_id = str(header.get("data", ""))
+    if not quote_id:
+        return {"error": "创建报价单头失败", "message": str(header.get("msg", ""))}
 
-    quote_result = cpq_api.create_quote_full(
-        account_id=str(customer_id),
-        account_name=customer_name,
-        line_items=line_items,
-        description=f"Agent 自动创建 - {model_code} x {quantity}",
-    )
+    # 写行项目
+    _request("POST", "/cpq/quote/lineitem", body={
+        "quoteId": quote_id, "modelId": model_id,
+        "quantity": quantity, "unitPrice": unit_price,
+        "itemName": f"{model_code} {model_name}",
+        "itemCode": model_code,
+        "itemType": "PRODUCT", "unit": "PCS",
+    })
 
     total_price = round(unit_price * quantity, 2)
-    quote_id = str(quote_result.get("quoteId", ""))
-    quote_no = quote_result.get("quoteNo", "")
+    cfg = _cpq_config or CPQConfig()
     result = {
         "quoteId": quote_id,
-        "quoteNo": quote_no,
-        "quoteUrl": f"{(_cpq_config.base_url.replace(':30000',':3000') if _cpq_config else 'http://localhost:3000')}/quoting/{quote_id}",
+        "quoteNo": quote_id,
+        "quoteUrl": f"{cfg.frontend_url}/quoting/{quote_id}",
         "modelCode": model_code,
         "modelName": model_name,
         "quantity": quantity,
         "unitPrice": unit_price,
         "totalPrice": total_price,
     }
-    if quote_result.get("error"):
-        result["warning"] = quote_result.get("message", "行项目写入可能有问题，请在系统中手动补充")
-    print(f"[create_quote] rid={result_id} model={model_code} price={unit_price} total={total_price} quote={quote_no}")
+    print(f"[create_quote] model={model_code} price={unit_price} total={total_price} quoteId={quote_id}")
     return result
 
-
-@tool
 def confirm_replacement(confirm_id: int = 0, accept: bool = True) -> dict:
     """确认或拒绝工艺推荐的替代产品。
 
@@ -961,20 +950,22 @@ def check_process_status(result_id: int = 0) -> dict:
     """
     if not result_id or result_id == 0:
         ids = get_last_confirm_ids()
-        result_id = ids.get("resultId") or 0
+        result_id = ids.get("recordId") or ids.get("resultId") or 0
     if not result_id:
         return {"error": "未找到活跃的工艺确认单", "message": "请先完成产品选择或提供审批编号"}
-    import cpq_api
 
-    # ★ 用户可能提供的是 recordId，通过 byRecord 接口查询
-    status = cpq_api._request("GET", f"/cpq/process/status/byRecord/{result_id}")
-    data = status.get("data") or status
-    if data and data.get("status") != "NOT_FOUND":
-        pass  # 找到了
-    else:
-        # 兜底：尝试 resultId 直接查
-        status = cpq_api._request("GET", f"/cpq/process/status/{result_id}")
-        data = status.get("data") or status
+    # ★ 优先按 recordId（审批编号 #开头）查 byRecord；兜底按 resultId 查 status
+    try:
+        result = _request("GET", f"/cpq/process/status/byRecord/{result_id}")
+    except Exception:
+        result = {}
+    data = result.get("data") or result
+    if not data or data.get("status") == "NOT_FOUND":
+        try:
+            result = _request("GET", f"/cpq/process/status/{result_id}")
+        except Exception:
+            result = {}
+        data = result.get("data") or result
     return {
         "status": data.get("status","?"),
         "modelCode": data.get("modelCode",""),
