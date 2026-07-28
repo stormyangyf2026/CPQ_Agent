@@ -2,7 +2,7 @@ name: Docker CI — Build & Package
 
 on:
   push:
-    branches: [main, v4-deploy]
+    branches: [main, v4-deploy, deploy0728]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -78,7 +78,7 @@ jobs:
         with: { node-version: '22' }
 
       - name: 构建前端静态文件（空 BASE_URL = 走 nginx 同源代理）
-        run: cd frontend && npm install && VITE_AGENT_API_URL= npm run build -- --mode staging
+        run: cd frontend && npm install && VITE_AGENT_API_URL= npm run build -- --mode production
 
       - name: 构建并推送 Docker 镜像（前端 Nginx + 静态文件）
         uses: docker/build-push-action@v6
@@ -128,7 +128,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           mkdir deploy
-          cp config/staging/config.yaml deploy/agent-config.yaml
+          cp config/production/config.yaml deploy/agent-config.yaml
           cp docker-compose.agent.yml deploy/
           cd deploy && tar czf ../cpq-agent-deploy.tar.gz .
       - uses: actions/upload-artifact@v4

@@ -4,7 +4,7 @@ model:
   api_key: sk-5cefe4230add4f939357147790cec49c
   base_url: https://api.deepseek.com
   temperature: 0.7
-  max_tokens: 4096
+  max_tokens: 8192
   top_p: 0.9
 cpq:
   base_url: http://localhost:30000

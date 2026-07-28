@@ -86,6 +86,35 @@ app = FastAPI(title="CPQ Agent", version="3.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
+def _extract_tool_data(output) -> dict | None:
+    """鲁棒提取 ToolMessage 中的 dict 数据，兼容 DeepAgents/LangChain 各版本 output 格式"""
+    if output is None:
+        return None
+    if isinstance(output, dict):
+        return output
+    if isinstance(output, (list, tuple)) and len(output) > 0:
+        # 可能是 content blocks: [{"text": "...", "type": "text"}]
+        first = output[0]
+        if isinstance(first, dict):
+            if 'text' in first:
+                return _extract_tool_data(first['text'])
+            return first
+        return _extract_tool_data(first)
+    if isinstance(output, str):
+        try:
+            return json.loads(output)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    # ToolMessage 对象
+    if hasattr(output, 'content'):
+        return _extract_tool_data(output.content)
+    # 最后尝试直接转 dict
+    try:
+        return dict(output)
+    except (TypeError, ValueError):
+        return None
+
+
 async def sse_stream(messages: list[dict], session_id: str = "", client_id: str = "") -> AsyncGenerator[str, None]:
     """DeepAgents 流式 → SSE"""
     tools.set_current_session(session_id)
@@ -123,24 +152,23 @@ async def sse_stream(messages: list[dict], session_id: str = "", client_id: str 
             elif kind == "on_tool_end":
                 name = event.get("name", "")
                 output = event.get("data", {}).get("output", {})
-                # ToolMessage → dict
-                tool_data = None
-                if hasattr(output, 'content'):
-                    try: tool_data = json.loads(output.content) if isinstance(output.content, str) else output.content
-                    except: pass
-                elif isinstance(output, dict): tool_data = output
+
+                # ★ 鲁棒提取 ToolMessage → dict（兼容多版本 DeepAgents/LangChain）
+                tool_data = _extract_tool_data(output)
+                if tool_data is None:
+                    print(f"[server] WARN: 无法解析工具输出 tool={name} output_type={type(output).__name__}")
 
                 yield f"event: status\ndata: {json.dumps({'status': 'tool_result', 'tool': name})}\n\n"
 
                 # match_product → 结构化卡片事件（只发一次，防止LLM重复调用）
-                if name == "match_product" and tool_data and not match_sent:
+                if name == "match_product" and isinstance(tool_data, dict) and not match_sent:
                     recs = tool_data.get("recommendations", [])
                     if recs:
                         match_sent = True
                         yield f"event: match_result\ndata: {json.dumps({'resultId': tool_data.get('resultId'), 'sessionId': tool_data.get('sessionId'), 'threshold': tool_data.get('threshold',70), 'thresholdPassed': tool_data.get('thresholdPassed',False), 'suggestDiy': tool_data.get('suggestDiy',False), 'totalScored': tool_data.get('totalScored',0), 'recommendations': recs[:10]}, ensure_ascii=False)}\n\n"
 
                 # submit_feasibility_confirm / select_product / confirm_replacement → 工艺确认卡片事件
-                if name in ("submit_feasibility_confirm", "select_product", "confirm_replacement") and tool_data:
+                if name in ("submit_feasibility_confirm", "select_product", "confirm_replacement") and isinstance(tool_data, dict):
                     yield f"event: process_confirm\ndata: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
     except Exception as e:
         traceback.print_exc()
@@ -224,7 +252,8 @@ async def update_config(payload: dict = Body(...)):
 
 @app.get("/sessions")
 async def list_sessions(clientId: str = Query("")):
-    return []  # 暂时禁用会话历史列表
+    if not clientId: return []
+    return _list_sessions(clientId)
 
 @app.get("/sessions/{sessionId}")
 async def get_session(sessionId: str, clientId: str = Query("")):

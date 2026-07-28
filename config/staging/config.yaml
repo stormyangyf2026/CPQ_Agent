@@ -3,9 +3,9 @@ agent:
   max_turns: 10
   system_prompt: ''
 cpq:
-  base_url: http://cpq-backend:30000
+  base_url: http://localhost:30000
   client_id: e5cd7e4891bf95d1d19206ce24a7b32e
-  frontend_url: http://8.148.208.235:3000
+  frontend_url: http://localhost:3000
   max_retries: 3
   password: admin123
   timeout: 30
@@ -18,7 +18,7 @@ logging:
 model:
   api_key: sk-5cefe4230add4f939357147790cec49c
   base_url: https://api.deepseek.com
-  max_tokens: 4096
+  max_tokens: 8192
   model_name: deepseek-v4-pro
   provider: deepseek
   temperature: 0.7
