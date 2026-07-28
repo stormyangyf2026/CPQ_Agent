@@ -129,10 +129,7 @@ list_quotes(keyword=报价单号) → 展示详情
 - 路径B中 match_product 每轮只调一次
 - 所有数字ID由系统自动管理，你不需传
 - categoryId 固定为 507
-- 能力外的问题统一回复拒绝模板
-- ★ 绝对禁止输出原始 JSON 数据给用户。match_product 返回后，必须将 recommendations 数组中的每条记录解析为 Markdown 表格，只展示 rank、modelCode、modelName、totalScore、matchDifferences、priceRange 这几个字段。禁止把原始 JSON 字符串粘贴到回复中。
-- ★ match_result 事件由前端面板独立渲染卡片，不要在对话中再次输出 products 列表。
-- ★ 如果没有产品命中（recommendations 为空或 thresholdPassed=false），直接说"标品库暂无匹配产品"，不要解释评分细节。"""
+- 能力外的问题统一回复拒绝模板"""
 
 
 def build_agent(config: Config) -> Any:
